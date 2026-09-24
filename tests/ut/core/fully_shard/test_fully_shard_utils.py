@@ -24,12 +24,47 @@ import unittest
 
 # pylint: disable=C0413
 import torch
+from torch.nn.utils.rnn import pack_padded_sequence
 
 from hyper_parallel.core.fully_shard.utils import (
+    apply_to_tensors,
     MixedPrecisionPolicy,
     OffloadPolicy,
     CPUOffloadPolicy,
 )
+
+
+class TestApplyToTensors(unittest.TestCase):
+    """Unit tests for recursive tensor mapping in fully_shard utilities."""
+
+    def test_packed_sequence_uses_mapped_data(self):
+        """Verify PackedSequence data and metadata after tensor mapping.
+
+        description: Apply a tensor transform to a PackedSequence.
+        expectation: Data is transformed while batch and sort metadata are preserved.
+        feature: apply_to_tensors PackedSequence support.
+        """
+        packed = pack_padded_sequence(
+            torch.tensor([[1.0, 2.0, 0.0], [3.0, 4.0, 5.0]]),
+            lengths=[2, 3],
+            batch_first=True,
+            enforce_sorted=False,
+        )
+
+        result = apply_to_tensors(lambda tensor: tensor + 1, packed)
+
+        self.assertIsInstance(result, type(packed))
+        self.assertTrue(
+            torch.equal(result.data, packed.data + 1),
+            f"PackedSequence data mismatch: expected={packed.data + 1}, got={result.data}",
+        )
+        self.assertTrue(
+            torch.equal(result.batch_sizes, packed.batch_sizes),
+            f"PackedSequence batch sizes changed: expected={packed.batch_sizes}, "
+            f"got={result.batch_sizes}",
+        )
+        self.assertIs(result.sorted_indices, packed.sorted_indices)
+        self.assertIs(result.unsorted_indices, packed.unsorted_indices)
 
 
 class TestMixedPrecisionPolicy(unittest.TestCase):

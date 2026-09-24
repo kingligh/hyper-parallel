@@ -263,13 +263,13 @@ class HSDPParamV2:
             # pre-dedup behavior.
             return source_mesh, source_placements
 
-        storage_dim_names = tuple(
-            dim_name
-            for dim_index, dim_name in enumerate(source_mesh_dim_names)
+        storage_dim_names = []
+        for dim_index, dim_name in enumerate(source_mesh_dim_names):
             if not self._source_dim_covered_by_fsdp(
                 source_mesh, dim_index, coordinate, fsdp_ranks
-            )
-        )
+            ):
+                storage_dim_names.append(dim_name)
+        storage_dim_names = tuple(storage_dim_names)
         if not storage_dim_names or storage_dim_names == source_mesh_dim_names:
             return source_mesh, source_placements
 
@@ -449,7 +449,8 @@ class HSDPParamV2:
         """Clear the all-reduce output tensor to free memory."""
         self.all_reduce_comm_ctx.all_reduce_output = None
 
-    def clear_unsharded_source_grad(self):
+    def clear_unsharded_source_grad(self) -> None:
+        """Clear the live unsharded gradient or its accumulated buffer."""
         if self.unsharded_accumulated_grad_data is not None:
             self.unsharded_accumulated_grad = None
         elif self.unsharded_param.grad is not None:
@@ -758,12 +759,14 @@ class HSDPParamV2:
         )
 
     def to_sharded(self) -> None:
+        """Install the sharded parameter on managed modules and update state."""
         self._setattr_on_modules(self.sharded_param)
         if self.unsharded_param_buffers[0] is not self._sharded_param_data:
             self.free_unsharded_param()
         self.sharded_state = ShardedState.SHARDED
 
     def to_unsharded(self) -> None:
+        """Install the unsharded parameter on managed modules and update state."""
         set_requires_grad_if_needed(self.sharded_param, self._unsharded_param)
         self._setattr_on_modules(self._unsharded_param)
         self.sharded_state = ShardedState.UNSHARDED
@@ -804,6 +807,7 @@ class HSDPParamV2:
         return sharded_dtensor
 
     def to_accumulated_grad_if_needed(self) -> None:
+        """Move the current unsharded gradient into the accumulation buffer."""
         if self._unsharded_param.grad is None:
             return
         # Keep local gradients alive across no-sync / delayed-sync steps even
@@ -818,6 +822,7 @@ class HSDPParamV2:
             self.unsharded_accumulated_grad += unsharded_grad
 
     def accumulate_unsharded_grad_if_needed(self) -> None:
+        """Add the current unsharded gradient to an existing accumulation buffer."""
         if (
             self.unsharded_accumulated_grad is not None
             and self.unsharded_param.grad is not None
@@ -1079,6 +1084,11 @@ class HSDPParamV2:
 
 
     def unshard(self, async_op: bool = False) -> None:
+        """Start gathering the full parameter when no gather is already pending.
+
+        Args:
+            async_op: Whether to launch the all-gather asynchronously.
+        """
         if self.allgather_comm_ctx.allgather_handle is not None:
             # Already triggered by HSDPState.prefetch(), so return directly.
             return  # no-op
@@ -1086,6 +1096,7 @@ class HSDPParamV2:
 
 
     def wait_for_unshard(self) -> None:
+        """Wait for the parameter all-gather and expose the unsharded parameter."""
         self._assert_in_states(ShardedState.SHARDED)
 
         if self.allgather_comm_ctx.allgather_handle is not None:

@@ -450,13 +450,12 @@ class HSDPSchedulerV2:
         self._backup_forward_fetch = self.forward_prefetch_cells
         self.forward_prefetch_cells = []
 
-    def _restore_forward_prefetch_after_recompute(self) -> bool:
-        """Restore forward prefetch list after a recompute forward hook finishes."""
+    def _restore_forward_prefetch_after_recompute(self) -> None:
+        """Restore the saved forward prefetch list after activation recompute."""
         if self._backup_forward_fetch is None:
-            return False
+            return
         self.forward_prefetch_cells = self._backup_forward_fetch
         self._backup_forward_fetch = None
-        return True
 
     def _register_post_backward_hook(self, args, kwargs):
         """Wrap forward args/kwargs through PostBackwardFunction to register backward hook."""
@@ -488,7 +487,7 @@ class HSDPSchedulerV2:
         args, kwargs = self._hsdp_forward_pre_hook(cell, args, kwargs)
         return self._register_post_backward_hook(args, kwargs)
 
-    def _register_backward_pre_hook(self, outputs):
+    def _register_backward_pre_hook(self, outputs) -> None:
         """Register gradient hooks on all requires-grad outputs to trigger backward pre hook."""
         flat_outputs, _ = tree_flatten(outputs)
         for output in flat_outputs:
@@ -505,7 +504,6 @@ class HSDPSchedulerV2:
                 # pylint: enable=C0103, W0102
                 handle = output.register_hook(wrapper_for_backward_pre_hook)
                 handle_ref[0] = handle
-        return outputs
 
     @_dynamo_disable
     def _forward_hook(self, cell, inputs, outputs):  # pylint: disable=R1710
@@ -605,7 +603,8 @@ class HSDPSchedulerV2:
             return
         self._hsdp_backward_hook(self.cell, None, None)
 
-    def _register_forward_module_hook(self, mod, hook) -> None:
+    @staticmethod
+    def _register_forward_module_hook(mod, hook) -> None:
         """Register forward hook; use ``always_call=True`` when supported (matches PyTorch FSDP)."""
         sig = inspect.signature(mod.register_forward_hook)
         if "always_call" in sig.parameters:

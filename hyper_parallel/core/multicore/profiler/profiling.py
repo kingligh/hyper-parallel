@@ -759,16 +759,19 @@ def _decode_profile_slot(
     )
     if record_count == 0:
         return [], None, dropped_count
-    records = _decode_slot_records(
-        raw_buffer,
-        slot,
-        slot_offset,
-        record_count,
-        core_type,
-        block_id,
-        entry_cycle,
+    return (
+        _decode_slot_records(
+            raw_buffer,
+            slot,
+            slot_offset,
+            record_count,
+            core_type,
+            block_id,
+            entry_cycle,
+        ),
+        entry_cycle or None,
+        dropped_count,
     )
-    return records, entry_cycle or None, dropped_count
 
 
 def _decode_cycle_records(
@@ -917,11 +920,10 @@ def _parse_cycle_buffer(
     )
     resolved_device_id = config.rank if config.device_id is None else config.device_id
     trace_events = _thread_metadata_events(config.rank, resolved_device_id, config.kernel_name, raw_records)
-    sorted_records = sorted(
+    for record in sorted(
         raw_records,
         key=lambda item: (item["start_cycle"], item["core_type"], item["block_id"]),
-    )
-    for record in sorted_records:
+    ):
         trace_events.append(_duration_trace_event(
             record,
             rank=config.rank,

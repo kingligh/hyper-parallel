@@ -434,7 +434,14 @@ def parse_yaml_for_optimization(yaml_path: str) -> YamlOptimizationConfig:
         pp_degree=pp_degree,
         num_layer=num_layer,
         micro_batch_num=micro_batch_num,
-        **optional_fields._asdict(),
+        num_of_interleave=optional_fields.num_of_interleave,
+        vpp_less_memory=optional_fields.vpp_less_memory,
+        optimization_level=optional_fields.optimization_level,
+        memory_limit=optional_fields.memory_limit,
+        constant_memory=optional_fields.constant_memory,
+        enable_simulation=optional_fields.enable_simulation,
+        sim_comm_time=optional_fields.sim_comm_time,
+        use_backward_time=optional_fields.use_backward_time,
     )
     config.validate()
     return config

@@ -146,8 +146,7 @@ def apply_to_tensors(fn: Callable[[Tensor], Any], container: Any) -> Any:
                 od[key] = apply(value)
             return od
         if isinstance(x, PackedSequence):
-            apply(x.data)
-            return x
+            return x._replace(data=apply(x.data))
         if isinstance(x, dict):
             return {key: apply(value) for key, value in x.items()}
         if isinstance(x, tuple) and hasattr(x, "_asdict") and hasattr(x, "_fields"):
@@ -290,6 +289,7 @@ class CPUOffloadPolicy(OffloadPolicy):
             is constrained. (Default: True)
     """
     pin_memory: bool = True
+
 
 @dataclass
 class CommFusionPolicy():

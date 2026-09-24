@@ -27,7 +27,12 @@ namespace {
 
 constexpr std::size_t kLogLineCapacity = 2048U;
 constexpr std::size_t kTimestampCapacity = 32U;
+constexpr std::size_t kMillisecondSuffixLength = 4U;
 constexpr int64_t kMillisecondsPerSecond = 1000;
+constexpr int64_t kMillisecondsHundredsDivisor = 100;
+constexpr int64_t kMillisecondsTensDivisor = 10;
+constexpr int64_t kDecimalBase = 10;
+constexpr int kDigitZeroCode = '0';
 constexpr std::string_view kTruncationMarker = "...";
 constexpr std::string_view kFallbackTimestamp = "0000-00-00-00:00:00.000";
 
@@ -168,10 +173,16 @@ void FormatTimestamp(char (&timestamp)[kTimestampCapacity]) noexcept {
   const auto milliseconds =
     std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % kMillisecondsPerSecond;
   const std::size_t length = std::strlen(timestamp);
+  if (length + kMillisecondSuffixLength >= kTimestampCapacity) {
+    std::copy_n(kFallbackTimestamp.data(), kFallbackTimestamp.size(), timestamp);
+    timestamp[kFallbackTimestamp.size()] = '\0';
+    return;
+  }
   timestamp[length] = '.';
-  timestamp[length + 1U] = static_cast<char>('0' + milliseconds / 100);
-  timestamp[length + 2U] = static_cast<char>('0' + milliseconds / 10 % 10);
-  timestamp[length + 3U] = static_cast<char>('0' + milliseconds % 10);
+  timestamp[length + 1U] = static_cast<char>(kDigitZeroCode + milliseconds / kMillisecondsHundredsDivisor);
+  timestamp[length + 2U] =
+    static_cast<char>(kDigitZeroCode + milliseconds / kMillisecondsTensDivisor % kDecimalBase);
+  timestamp[length + 3U] = static_cast<char>(kDigitZeroCode + milliseconds % kDecimalBase);
   timestamp[length + 4U] = '\0';
 }
 

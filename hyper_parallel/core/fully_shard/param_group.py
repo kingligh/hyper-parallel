@@ -663,7 +663,8 @@ class HSDPParamGroup:
             )
         return reduce_scatter_buckets
 
-    def _build_gradient_bucket_layout_from(self, hsdp_params):
+    @staticmethod
+    def _build_gradient_bucket_layout_from(hsdp_params):
         param_offsets = []
         param_numels = []
         flat_offset = 0

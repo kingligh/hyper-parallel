@@ -16,8 +16,8 @@
 #include "tiling/platform/platform_ascendc.h"
 
 #include "log/log.h"
-#include "hyper_mega_moe_tiling.h"
 #include "../op_kernel/hyper_mega_moe_tiling_key.h"
+#include "hyper_mega_moe_tiling.h"
 
 namespace optiling {
 const uint64_t BLOCK_SIZE = 32;

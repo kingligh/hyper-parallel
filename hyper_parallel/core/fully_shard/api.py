@@ -602,6 +602,7 @@ def _get_modules_parameters(modules, ignored_params=None):
     """Collect deduplicated parameters from module roots."""
     return get_managed_modules_parameters(modules, ignored_params)
 
+
 def _validate_managed_params_source_shard_infos(
     managed_parameters: set[nn.Parameter],
     source_shard_infos: Optional[Mapping[nn.Parameter, SourceShardMetaInfo]],

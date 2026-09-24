@@ -145,7 +145,8 @@ class _HookManager(_Backbone):
     def __set_node_eval_comm_fun(self, cls_obj, target_node, *args, **kwargs):
         """overwrite given node's comm formulas"""
         c_comm = None
-        if (args and args[-1] == 0) or kwargs.get("dyn_comm") == 0 or kwargs.get("dyn") == 0:
+        positional_zero = args and args[-1] == 0
+        if positional_zero or kwargs.get("dyn_comm") == 0 or kwargs.get("dyn") == 0:
             c_comm = 0
         dyn_dp_comm = kwargs.get("dyn_dp_comm", c_comm)
         dyn_tp_comm = kwargs.get("dyn_tp_comm", c_comm)
