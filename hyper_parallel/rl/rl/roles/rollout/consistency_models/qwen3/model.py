@@ -35,9 +35,6 @@ from rl.roles.rollout.consistency_models.qwen3.attention import Qwen3PagedAttent
 from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
 from hyper_parallel.distributed import validate_model_compatibility
 
-from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
-from hyper_parallel.distributed import validate_model_compatibility
-
 
 def join_prefix(prefix: str, suffix: str) -> str:
     """Join one optional vLLM module prefix."""
