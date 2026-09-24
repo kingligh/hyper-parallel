@@ -14,6 +14,12 @@
 # ============================================================================
 """Model-owned mappings between Trainer, canonical, and rollout weights."""
 
+__all__ = [
+    "ModelWeightAdapter",
+    "build_model_weight_adapter",
+]
+
+
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -157,12 +163,6 @@ def build_model_weight_adapter(
     raise ValueError(f"Unsupported weight-sync model family: {model.family!r}")
 
 
-__all__ = [
-    "ModelWeightAdapter",
-    "build_model_weight_adapter",
-]
-
-
 def alias_tied_embeddings(
     state_dict: dict[str, Any],
     model: VLLMModelRegistration,
@@ -207,14 +207,12 @@ def _direct_tensor_description(
             f"Native direct tensor {source_name!r} has invalid permutation {permutation}"
         )
     physical_lengths = tuple(local_shape[axis] for axis in permutation)
-    if any(
-        start < 0 or start + length > int(limit)
-        for start, length, limit in zip(
-            destination_starts,
-            physical_lengths,
-            parameter.shape,
-        )
-    ):
+    exceeds_destination = False
+    for start, length, limit in zip(destination_starts, physical_lengths, parameter.shape):
+        if start < 0 or start + length > int(limit):
+            exceeds_destination = True
+            break
+    if exceeds_destination:
         raise ValueError(
             f"Native direct tensor {source_name!r} exceeds {destination_name!r}: "
             f"offset={destination_starts}, logical={local_shape}, "

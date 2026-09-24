@@ -187,6 +187,31 @@ def measure_post_update_old_policy_mismatch(
     }
 
 
+def _first_pre_update_mismatch(experience, actor_log_probs, rollout_log_probs, mask, mismatch_mask, rank):
+    """Describe the first bitwise mismatch with its trajectory position."""
+    first = mismatch_mask.nonzero(as_tuple=False)[0]
+    row, column = (int(position.item()) for position in first)
+    trajectory = experience.trajectories[row] if experience.trajectories else None
+    actor_value = float(actor_log_probs[row, column].item())
+    rollout_value = float(rollout_log_probs[row, column].item())
+    actor_bits = actor_log_probs.detach().contiguous().view(torch.int32)
+    rollout_bits = rollout_log_probs.detach().contiguous().view(torch.int32)
+    return {
+        "rank": rank,
+        "row": row,
+        "trajectory_id": None if trajectory is None else trajectory.trajectory_id,
+        "prompt_id": None if trajectory is None else trajectory.prompt_id,
+        "response_offset": int(mask[row, : column + 1].flatten().sum(dim=0).item()) - 1,
+        "sequence_position": column + 1,
+        "token_id": int(experience.sequences[row, column + 1].item()),
+        "actor_value": actor_value,
+        "rollout_value": rollout_value,
+        "actor_bits": f"0x{int(actor_bits[row, column].item()) & 0xFFFFFFFF:08x}",
+        "rollout_bits": f"0x{int(rollout_bits[row, column].item()) & 0xFFFFFFFF:08x}",
+        "abs_diff": abs(actor_value - rollout_value),
+    }
+
+
 def _populate_pre_update_record(experience, actor_log_probs, expected_policy_version, record, rank):
     """Record local bit-exact evidence before all ranks exchange their verdicts."""
     rollout_log_probs = experience.old_log_probs
@@ -208,9 +233,10 @@ def _populate_pre_update_record(experience, actor_log_probs, expected_policy_ver
     if not bool(rollout_values.isfinite().all().item()):
         raise ValueError("Pre-update rollout log-probabilities contain non-finite values")
 
-    actor_bits = actor_log_probs.detach().contiguous().view(torch.int32)
-    rollout_bits = rollout_log_probs.detach().contiguous().view(torch.int32)
-    mismatch_mask = actor_bits.ne(rollout_bits) & mask
+    mismatch_mask = (
+        actor_log_probs.detach().contiguous().view(torch.int32)
+        .ne(rollout_log_probs.detach().contiguous().view(torch.int32)) & mask
+    )
     mismatch_count = int(mismatch_mask.flatten().sum(dim=0).item())
     absolute_diff = (actor_values - rollout_values).abs()
     record.update(
@@ -222,25 +248,6 @@ def _populate_pre_update_record(experience, actor_log_probs, expected_policy_ver
         }
     )
     if mismatch_count:
-        first = mismatch_mask.nonzero(as_tuple=False)[0]
-        row = int(first[0].item())
-        column = int(first[1].item())
-        trajectory = experience.trajectories[row] if experience.trajectories else None
-        actor_value = float(actor_log_probs[row, column].item())
-        rollout_value = float(rollout_log_probs[row, column].item())
-        record["first_mismatch"] = {
-            "rank": rank,
-            "row": row,
-            "trajectory_id": None if trajectory is None else trajectory.trajectory_id,
-            "prompt_id": None if trajectory is None else trajectory.prompt_id,
-            "response_offset": int(
-                mask[row, : column + 1].flatten().sum(dim=0).item()
-            ) - 1,
-            "sequence_position": column + 1,
-            "token_id": int(experience.sequences[row, column + 1].item()),
-            "actor_value": actor_value,
-            "rollout_value": rollout_value,
-            "actor_bits": f"0x{int(actor_bits[row, column].item()) & 0xFFFFFFFF:08x}",
-            "rollout_bits": f"0x{int(rollout_bits[row, column].item()) & 0xFFFFFFFF:08x}",
-            "abs_diff": abs(actor_value - rollout_value),
-        }
+        record["first_mismatch"] = _first_pre_update_mismatch(
+            experience, actor_log_probs, rollout_log_probs, mask, mismatch_mask, rank
+        )

@@ -66,10 +66,10 @@ class AgentSession:
                 observation_encoder=observation_encoder,
             )
         elif (
-            episode_context.prompt.prompt_id != prompt.prompt_id
-            or episode_context.policy_version != policy_version
-            or episode_context.sample_index != sample_index
-            or episode_context.max_turns != max_turns
+            (episode_context.prompt.prompt_id, episode_context.policy_version)
+            != (prompt.prompt_id, policy_version)
+            or (episode_context.sample_index, episode_context.max_turns)
+            != (sample_index, max_turns)
         ):
             raise ValueError(
                 "AgentSession arguments must match the provided EpisodeContext"
@@ -362,7 +362,7 @@ class AgentSession:
         self._record_transition(transition)
         self.done = bool(transition.done)
         self.truncated = bool(transition.truncated)
-        self._append_observation(
+        _ = self._append_observation(
             transition.observation,
             terminal=self.done or self.truncated,
         )

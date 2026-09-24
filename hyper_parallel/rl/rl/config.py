@@ -69,7 +69,6 @@ from hyper_parallel.trainer.config import (
     TrainingConfig,
 )
 
-
 _HCCL_MIN_PORT = 1024
 _HCCL_MAX_PORT = 65520
 _EXPECTED_TOP_LEVEL = frozenset(
@@ -187,11 +186,8 @@ def _validate_training_sizes(
     if float(gate.get("min_gradient_norm", 0.0)) < 0:
         raise ValueError("train.learning_gate.min_gradient_norm must be non-negative")
     gate_max_step = gate.get("max_step")
-    if gate_max_step is not None and (
-        not isinstance(gate_max_step, int)
-        or isinstance(gate_max_step, bool)
-        or gate_max_step <= 0
-    ):
+    valid_gate_step = isinstance(gate_max_step, int) and not isinstance(gate_max_step, bool)
+    if gate_max_step is not None and (not valid_gate_step or gate_max_step <= 0):
         raise ValueError("train.learning_gate.max_step must be a positive integer or null")
 
 
@@ -660,7 +656,7 @@ def _validate_critic(
     )
     if int(critic.get("response_mini_batch_size", train["response_mini_batch_size"])) > response_count:
         raise ValueError("Critic mini-batch cannot exceed local response count")
-    optional_mapping(critic, "optimizer")
+    _ = optional_mapping(critic, "optimizer")
     if "weights_path" in critic:
         weights_path = _path_value(critic, "weights_path")
         resolve_model({**model, "weights_path": weights_path})

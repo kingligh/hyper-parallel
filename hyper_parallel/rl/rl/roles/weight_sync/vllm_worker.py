@@ -235,7 +235,7 @@ def init_direct_reshard_group(
     expected_tensor_parallel_size: int,
 ) -> dict[str, Any]:
     """Join one source-rank-to-target-TP stateless HCCL broadcast group."""
-    unused_topology, dp_rank, tp_rank, target_tp_rank = _direct_worker(
+    _, dp_rank, tp_rank, target_tp_rank = _direct_worker(
         worker,
         target_tp_rank,
         expected_data_parallel_size,
@@ -489,32 +489,13 @@ def _import_ipc_buffer(handles: Mapping[Any, Any], physical_npu_id: Any) -> Any:
     return rebuild_npu_tensor(*rebuild_args)
 
 
-def receive_ipc_direct_reshard(
-    worker: Any,
-    *,
-    payload_pickled: str,
-    policy_version: int,
-) -> dict[str, Any]:
-    """Import same-NPU packed buffers and scatter them into TP-local weights."""
-    # Torch and vLLM-Ascend are optional outside the Torch-NPU RL runtime.
-
-    version = _validate_update(worker, policy_version, transport="IPC direct")
-
-    payload = pickle.loads(base64.b64decode(payload_pickled.encode("ascii")))
-    topology, physical_npu_id = _ipc_worker(worker, payload["worker_topology"])
-    tp_rank = int(topology["tp_rank"])
-    worker_tp_size = int(topology.get("tp_size", 1))
-    tensor_parallel_size = int(payload["tensor_parallel_size"])
-    if tensor_parallel_size != worker_tp_size:
-        raise ValueError(
-            "IPC direct payload TP size differs from the worker topology: "
-            f"payload={tensor_parallel_size}, worker={worker_tp_size}"
-        )
-    buckets = payload["buckets_by_target"].get(tp_rank, ())
+def _apply_ipc_direct_buckets(
+    worker: Any, buckets: Any, physical_npu_id: Any,
+) -> int:
+    """Import bounded buffers and apply each bucket to local parameters."""
     parameters = dict(worker.model_runner.get_model().named_parameters())
     received_bytes = 0
     imported_buffers = []
-
     try:
         for bucket in buckets:
             handles = bucket["ipc_handles"]
@@ -536,6 +517,28 @@ def receive_ipc_direct_reshard(
         if imported_buffers:
             torch.npu.current_stream().synchronize()
             imported_buffers.clear()
+    return received_bytes
+
+
+def receive_ipc_direct_reshard(
+    worker: Any,
+    *,
+    payload_pickled: str,
+    policy_version: int,
+) -> dict[str, Any]:
+    """Import same-NPU packed buffers and scatter them into TP-local weights."""
+    version = _validate_update(worker, policy_version, transport="IPC direct")
+    payload = pickle.loads(base64.b64decode(payload_pickled.encode("ascii")))
+    topology, physical_npu_id = _ipc_worker(worker, payload["worker_topology"])
+    worker_tp_size = int(topology.get("tp_size", 1))
+    tensor_parallel_size = int(payload["tensor_parallel_size"])
+    if tensor_parallel_size != worker_tp_size:
+        raise ValueError(
+            "IPC direct payload TP size differs from the worker topology: "
+            f"payload={tensor_parallel_size}, worker={worker_tp_size}"
+        )
+    buckets = payload["buckets_by_target"].get(int(topology["tp_rank"]), ())
+    received_bytes = _apply_ipc_direct_buckets(worker, buckets, physical_npu_id)
 
     worker._hyper_pending_policy_version = version
     return _receive_ack(

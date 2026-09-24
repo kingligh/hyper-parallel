@@ -44,11 +44,9 @@ class AdvantageEstimator(Protocol):
 ADVANTAGE_ESTIMATORS = Registry[AdvantageEstimatorBuilder]("advantage estimator")
 
 
-def register_advantage_estimator(
-    name: str,
-) -> Callable[[AdvantageEstimatorBuilder], AdvantageEstimatorBuilder]:
-    """Register an advantage estimator constructor under a stable name."""
-    return ADVANTAGE_ESTIMATORS.register(name)
+register_advantage_estimator: Callable[
+    [str], Callable[[AdvantageEstimatorBuilder], AdvantageEstimatorBuilder]
+] = ADVANTAGE_ESTIMATORS.register
 
 
 def get_advantage_estimator(name: str, **kwargs: Any) -> AdvantageEstimator:

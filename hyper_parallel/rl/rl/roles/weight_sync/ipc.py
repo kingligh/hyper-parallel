@@ -18,6 +18,7 @@ import base64
 import os
 import pickle
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Mapping, Optional, Sequence
 
 import torch
@@ -39,6 +40,15 @@ class PhysicalRolloutWorker:
     dp_rank: int
     tp_rank: int
     physical_device_id: Any
+
+
+def _pack_or_allocate_direct_bucket(
+    state_dict: Mapping[str, Any], bucket: Any, device: Any, rank: int, source_rank: int,
+) -> Any:
+    """Materialize source bytes or allocate a same-sized broadcast receiver."""
+    if rank == source_rank:
+        return pack_direct_bucket(state_dict, bucket, device)
+    return torch.empty(bucket.total_bytes, dtype=torch.uint8, device=device)
 
 
 def resolve_physical_worker_topology(
@@ -310,10 +320,7 @@ class IPCWeightTransport:
                 for bucket_index, bucket in enumerate(plan.for_route(source_rank, target_rank)):
                     packed = synchronized_call(
                         "direct IPC bucket packing",
-                        lambda current_bucket=bucket, current_source=source_rank: (
-                            pack_direct_bucket(state_dict, current_bucket, device) if rank == current_source
-                            else torch.empty(current_bucket.total_bytes, dtype=torch.uint8, device=device)
-                        ),
+                        partial(_pack_or_allocate_direct_bucket, state_dict, bucket, device, rank, source_rank),
                     )
                     torch.get_device_module().current_stream().synchronize()
                     dist.broadcast(packed, src=source_rank)

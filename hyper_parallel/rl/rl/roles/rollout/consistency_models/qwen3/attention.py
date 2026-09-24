@@ -14,6 +14,9 @@
 # ============================================================================
 """Qwen3 dense paged attention for the Hyper-vLLM model adapter."""
 
+__all__ = ["Qwen3PagedAttention"]
+
+
 from typing import Optional
 
 import torch  # pylint: disable=forbidden-backend-import
@@ -119,6 +122,3 @@ class Qwen3PagedAttention(nn.Module):
         output = self.attention(query, key, value)
         output = output.view(batch_size, num_tokens, -1)
         return self.o_proj(output), None
-
-
-__all__ = ["Qwen3PagedAttention"]

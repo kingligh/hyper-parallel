@@ -1376,7 +1376,8 @@ class VLLMGenerationEngine:
             raise RuntimeError("vLLM generation failed without a synchronized error")
         return result
 
-    def synchronize_error(self, local_error: Optional[Exception], operation: str) -> None:
+    @staticmethod
+    def synchronize_error(local_error: Optional[Exception], operation: str) -> None:
         """Propagate rollout and postprocessing failures across training ranks."""
         synchronize_error(local_error, operation)
 
