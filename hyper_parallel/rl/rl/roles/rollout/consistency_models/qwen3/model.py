@@ -35,6 +35,9 @@ from rl.roles.rollout.consistency_models.qwen3.attention import Qwen3PagedAttent
 from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
 from hyper_parallel.distributed import validate_model_compatibility
 
+from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
+from hyper_parallel.distributed import validate_model_compatibility
+
 
 def join_prefix(prefix: str, suffix: str) -> str:
     """Join one optional vLLM module prefix."""
@@ -310,15 +313,15 @@ class HyperQwen3ForCausalLM(Qwen3ForCausalLM):
             self.config.tie_word_embeddings
             and "lm_head.weight" in parameters
             and "lm_head.weight" not in loaded_parameters
-            and tied_embedding_weight is not None
         ):
-            _load_parameter(
-                parameters["lm_head.weight"],
-                tied_embedding_weight,
-                tp_mesh=self._tp_mesh,
-                placements=self._tp_placements.get("lm_head.weight"),
-            )
-            loaded_parameters.add("lm_head.weight")
+            if tied_embedding_weight is not None:
+                _load_parameter(
+                    parameters["lm_head.weight"],
+                    tied_embedding_weight,
+                    tp_mesh=self._tp_mesh,
+                    placements=self._tp_placements.get("lm_head.weight"),
+                )
+                loaded_parameters.add("lm_head.weight")
 
         missing_parameters = set(parameters).difference(loaded_parameters)
         if require_all and missing_parameters:
