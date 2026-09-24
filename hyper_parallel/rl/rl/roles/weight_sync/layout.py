@@ -262,6 +262,33 @@ def pack_direct_bucket(
     return packed
 
 
+def _mesh_source_region(
+    name: str, placements: tuple[Any, ...], device_mesh: Any,
+    global_shape: tuple[int, ...], local_shape: tuple[int, ...],
+) -> list[int]:
+    """Recover global offsets from inner TP placement to outer FSDP placement."""
+    coordinate = device_mesh.get_coordinate()
+    if coordinate is None or len(coordinate) != len(placements):
+        raise ValueError(f"Direct reshard source tensor {name!r} has no complete mesh coordinate")
+    starts = [0] * len(global_shape)
+    lengths = list(global_shape)
+    for mesh_dim in reversed(range(len(placements))):
+        placement = placements[mesh_dim]
+        if not callable(getattr(placement, "is_shard", None)) or not placement.is_shard():
+            continue
+        tensor_dim = int(placement.dim)
+        mesh_rank = int(coordinate[mesh_dim])
+        base, remainder = divmod(lengths[tensor_dim], int(device_mesh.size(mesh_dim)))
+        starts[tensor_dim] += mesh_rank * base + min(mesh_rank, remainder)
+        lengths[tensor_dim] = base + int(mesh_rank < remainder)
+    if tuple(lengths) != local_shape:
+        raise ValueError(
+            f"Direct reshard source tensor {name!r} mesh-derived shape differs from local: "
+            f"derived={tuple(lengths)}, local={local_shape}, placements={placements}"
+        )
+    return starts
+
+
 def describe_source_tensor(name: str, tensor: Any, source_rank: int) -> dict[str, Any]:
     """Describe a local state-dict value without materializing its full tensor."""
     local_value = local_tensor(tensor)
@@ -282,15 +309,14 @@ def describe_source_tensor(name: str, tensor: Any, source_rank: int) -> dict[str
         "source_rank": int(source_rank),
     }
     shard_placements = [
-        placement
-        for placement in placements
+        placement for placement in placements
         if callable(getattr(placement, "is_shard", None)) and placement.is_shard()
     ]
-    device_mesh = getattr(tensor, "device_mesh", None)
     if not shard_placements:
         description["shard_dim"] = None
         description["region_starts"] = [0] * len(global_shape)
         return description
+    device_mesh = getattr(tensor, "device_mesh", None)
     if device_mesh is None or len(placements) != int(device_mesh.ndim):
         if len(shard_placements) == 1:
             description["shard_dim"] = int(shard_placements[0].dim)
@@ -299,35 +325,8 @@ def describe_source_tensor(name: str, tensor: Any, source_rank: int) -> dict[str
             f"Direct reshard source tensor {name!r} requires mesh metadata for "
             f"multi-axis placements={placements}"
         )
-    coordinate = device_mesh.get_coordinate()
-    if coordinate is None or len(coordinate) != len(placements):
-        raise ValueError(
-            f"Direct reshard source tensor {name!r} has no complete mesh coordinate"
-        )
-    starts = [0] * len(global_shape)
-    lengths = list(global_shape)
-    # TP is applied before the outer FSDP wrapper.  When both placements shard
-    # the same tensor dimension, recover global offsets from inner to outer.
-    for mesh_dim in reversed(range(len(placements))):
-        placement = placements[mesh_dim]
-        if not callable(getattr(placement, "is_shard", None)) or not placement.is_shard():
-            continue
-        tensor_dim = int(placement.dim)
-        mesh_size = int(device_mesh.size(mesh_dim))
-        mesh_rank = int(coordinate[mesh_dim])
-        current_length = lengths[tensor_dim]
-        base, remainder = divmod(current_length, mesh_size)
-        shard_length = base + int(mesh_rank < remainder)
-        relative_start = mesh_rank * base + min(mesh_rank, remainder)
-        starts[tensor_dim] += relative_start
-        lengths[tensor_dim] = shard_length
-    if tuple(lengths) != local_shape:
-        raise ValueError(
-            f"Direct reshard source tensor {name!r} mesh-derived shape differs from local: "
-            f"derived={tuple(lengths)}, local={local_shape}, placements={placements}"
-        )
     description["shard_dim"] = None
-    description["region_starts"] = starts
+    description["region_starts"] = _mesh_source_region(name, placements, device_mesh, global_shape, local_shape)
     return description
 
 
@@ -370,8 +369,8 @@ def resolve_source_layouts(
                 f"Direct reshard source tensor {name!r} metadata differs across ranks"
             )
         unique_regions = _unique_source_regions(name, descriptions, global_shape)
-        layouts.extend(
-            SourceTensorLayout(
+        for (starts, lengths), description in unique_regions.items():
+            layouts.append(SourceTensorLayout(
                 name,
                 dtype_name,
                 element_size,
@@ -379,17 +378,8 @@ def resolve_source_layouts(
                 int(description["source_rank"]),
                 TensorRegion(starts, lengths),
                 str(description.get("source_name", name)),
-                tuple(
-                    int(value)
-                    for value in description.get(
-                        "source_starts",
-                        [0] * len(global_shape),
-                    )
-                ),
-            )
-            for (starts, lengths), description in unique_regions.items()
-        )
-        continue
+                tuple(int(value) for value in description.get("source_starts", [0] * len(global_shape))),
+            ))
     return tuple(layouts)
 
 
@@ -594,11 +584,7 @@ def _transfer_entry(
     for local, start, base in zip(source.local_starts, intersection.starts, source.region.starts):
         source_starts.append(local + start - base)
     destination_offsets = tuple(
-        start - base
-        for start, base in zip(
-            intersection.starts,
-            destination.region.starts,
-        )
+        start - base for start, base in zip(intersection.starts, destination.region.starts)
     )
     destination_starts = []
     for local, axis in zip(destination.local_starts, destination.physical_permutation):
@@ -771,32 +757,24 @@ def _parameter_destination_layouts(name, tensors, global_shape, tp_size):
         raise ValueError(
             f"Rollout parameter {name!r} layout differs across TP workers"
         )
-    (
-        placement,
-        shard_dim,
-        destination_name,
-        dtype_name,
-        element_size,
-        destination_permutation,
-        accepted_source_dtypes,
-    ) = signature
-    if placement == "shard":
-        if shard_dim is None:
+    if signature.placement == "shard":
+        if signature.shard_dim is None:
             raise ValueError(f"Sharded rollout parameter {name!r} has no shard_dim")
-        shard_dim = int(shard_dim)
+        resolved_shard_dim = int(signature.shard_dim)
         shard_offsets = _destination_shard_offsets(
             name,
             tensors,
             global_shape,
-            shard_dim,
+            resolved_shard_dim,
         )
     else:
+        resolved_shard_dim = signature.shard_dim
         shard_offsets = ()
     for tp_rank, tensor in enumerate(tensors):
         local_shape = tuple(int(size) for size in tensor["local_shape"])
         starts = _destination_region_starts(
-            name, placement, local_shape, global_shape, shard_dim,
-            shard_offsets[tp_rank] if placement == "shard" else None,
+            name, signature.placement, local_shape, global_shape, resolved_shard_dim,
+            shard_offsets[tp_rank] if signature.placement == "shard" else None,
         )
         offset_values = tensor.get("destination_starts", [0] * len(global_shape))
         destination_starts = tuple(int(value) for value in offset_values)
@@ -808,16 +786,16 @@ def _parameter_destination_layouts(name, tensors, global_shape, tp_size):
         layouts.append(
             DestinationTensorLayout(
                 name,
-                dtype_name,
-                element_size,
+                signature.dtype_name,
+                signature.element_size,
                 global_shape,
                 tp_rank,
                 tp_size,
                 TensorRegion(starts, local_shape),
-                destination_name,
+                signature.destination_name,
                 destination_starts,
-                destination_permutation,
-                accepted_source_dtypes,
+                signature.permutation,
+                signature.accepted_source_dtypes,
             )
         )
     return layouts

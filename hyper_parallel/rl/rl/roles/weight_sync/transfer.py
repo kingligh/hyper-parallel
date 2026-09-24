@@ -250,26 +250,30 @@ class FullGatherStrategy:
             raise RuntimeError("Full gather strategy has no prepared buckets")
         max_bucket_bytes = 0
         for bucket_index, bucket in enumerate(self._buckets):
+            def materialize(selected: Any = bucket) -> Any:
+                """Materialize the selected bucket under synchronized failure handling."""
+                return materialize_packed_weight_bucket(state, selected)
+
             packed = synchronized_call(
                 "full-gather bucket materialization",
-                lambda selected=bucket: materialize_packed_weight_bucket(
-                    state,
-                    selected,
-                ),
+                materialize,
             )
+
+            def send_bucket(selected: Any = bucket, payload: Any = packed, index: int = bucket_index) -> Any:
+                """Send the selected payload and retain its bucket identity."""
+                return transport.send_packed_bucket(
+                    client,
+                    self._context,
+                    index,
+                    self.source.adapter.packed_metadata(selected.worker_metadata()),
+                    selected.total_bytes,
+                    payload,
+                    version,
+                )
+
             ack = synchronized_call(
                 "full-gather bucket transfer",
-                lambda selected=bucket, payload=packed, index=bucket_index: (
-                    transport.send_packed_bucket(
-                        client,
-                        self._context,
-                        index,
-                        self.source.adapter.packed_metadata(selected.worker_metadata()),
-                        selected.total_bytes,
-                        payload,
-                        version,
-                    )
-                ),
+                send_bucket,
             )
             if (
                 ack.bucket_index != bucket_index
@@ -335,14 +339,14 @@ class WeightPublisher:
             )
             coordinator_call("weight-sync pause", client.pause)
             coordinator_call("weight-sync start", client.start_weight_update)
+
+            def execute_transfer() -> Optional[dict[str, Any]]:
+                """Execute the prepared publication strategy on every rank."""
+                return self.strategy.execute(client, state, self.transport, snapshot.version)
+
             streaming_stats = synchronized_call(
                 "weight-sync data transfer",
-                lambda: self.strategy.execute(
-                    client,
-                    state,
-                    self.transport,
-                    snapshot.version,
-                ),
+                execute_transfer,
             )
             coordinator_call("weight-sync finish", client.finish_weight_update)
             committed_version = coordinator_call(

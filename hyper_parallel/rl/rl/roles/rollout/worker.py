@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+__all__ = ["CodexRolloutManager", "DeepSeekRolloutManager", "RolloutManager"]
+
 from typing import Any, Optional, Sequence
 
 from rl.agentic import AgentRunner, ProgramAgentRunner
@@ -58,7 +60,8 @@ def _generation_settings(
 class RolloutManager:
     """Configure an AgentRunner for training or evaluation rollout."""
 
-    def __init__(
+    # Public construction accepts the complete rollout recipe through stable keyword arguments.
+    def __init__(  # pylint: disable=too-many-locals
         self,
         engine: GenerationEngine,
         tokenizer: Any,
@@ -210,6 +213,3 @@ class DeepSeekRolloutManager(_ProgramRolloutManager):
 
     program_factory = DeepSeekProgramFactory
     display_name = "DeepSeek Harness"
-
-
-__all__ = ["CodexRolloutManager", "DeepSeekRolloutManager", "RolloutManager"]

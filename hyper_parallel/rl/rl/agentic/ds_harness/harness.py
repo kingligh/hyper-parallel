@@ -352,16 +352,11 @@ class DeepSeekAgentProgram:
         )
         return dsh_home
 
-    def _run_harness(
-        self,
-        session_id: str,
-        artifact_dir: Path,
-        workspace_dir: Path,
-        session_root: Path,
-    ) -> tuple[str, str | None, list[dict[str, Any]]]:
-        """Run the external harness and retain its output for trajectory validation."""
-        expected = str(self.config.get("version", DEFAULT_DEEPSEEK_HARNESS_VERSION))
-        harness_class, config_class = _load_sdk(expected)
+    def _build_harness_config(
+        self, config_class: Any, session_id: str, artifact_dir: Path,
+        workspace_dir: Path, session_root: Path,
+    ) -> Any:
+        """Bind the SDK to its isolated runtime and gateway environment."""
         dsh_home = self._write_dsh_settings(artifact_dir)
         gateway_host = urlparse(self.gateway_url).hostname
         no_proxy = [os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))]
@@ -375,7 +370,7 @@ class DeepSeekAgentProgram:
             "no_proxy": ",".join(filter(None, no_proxy)),
         }
         runtime_bin = self.config.get("runtime_bin")
-        sdk_config = config_class(
+        return config_class(
             provider=str(self.config.get("provider", "deepseek-official")),
             model=str(self.config.get("model", "policy")),
             max_tokens=int(self.config["max_new_tokens"]),
@@ -391,12 +386,29 @@ class DeepSeekAgentProgram:
             base_url=self.gateway_url,
             api_key=session_id,
         )
+
+    def _run_harness(
+        self,
+        session_id: str,
+        artifact_dir: Path,
+        workspace_dir: Path,
+        session_root: Path,
+    ) -> tuple[str, str | None, list[dict[str, Any]]]:
+        """Run the external harness and retain its output for trajectory validation."""
+        expected = str(self.config.get("version", DEFAULT_DEEPSEEK_HARNESS_VERSION))
+        harness_class, config_class = _load_sdk(expected)
+        sdk_config = self._build_harness_config(config_class, session_id, artifact_dir, workspace_dir, session_root)
         prompt_text = self.prompt.messages[-1].content
         instruction = str(self.config.get("instruction_template", "{prompt}")).format(
             prompt=prompt_text
         )
         with harness_class(sdk_config) as harness:
             result = harness.run(instruction, session_id=session_id)
+        return self._save_harness_result(result, artifact_dir)
+
+    @staticmethod
+    def _save_harness_result(result: Any, artifact_dir: Path) -> tuple[str, str | None, list[dict[str, Any]]]:
+        """Persist SDK evidence and require a final answer for successful runs."""
         events = [_json_value(event) for event in result.events]
         with (artifact_dir / "deepseek-events.jsonl").open(
             "w", encoding="utf-8"

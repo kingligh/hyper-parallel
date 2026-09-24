@@ -475,7 +475,6 @@ def _local_rollout_record(
     """Build mergeable rollout statistics and bounded local samples."""
     response_lengths = rollout.action_mask.sum(dim=-1).detach().cpu().tolist()
     rewards = rollout.rewards.detach().cpu().tolist()
-    rank = dist.get_rank()
     batch_rows = {
         str(int(sample_index)): row
         for row, sample_index in enumerate(batch["sample_indices"])
@@ -487,7 +486,7 @@ def _local_rollout_record(
         samples.append(
             {
                 "step": step,
-                "rank": rank,
+                "rank": dist.get_rank(),
                 "prompt": batch["prompts"][batch_row],
                 "response": response,
                 "ground_truth": batch["ground_truths"][batch_row],

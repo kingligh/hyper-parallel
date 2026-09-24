@@ -105,7 +105,7 @@ class _State:
 
     def remove(self, session_id: str) -> None:
         """Release one completed in-memory trace while retaining its artifacts."""
-        self.get(session_id)
+        _ = self.get(session_id)
         self.event(session_id, "session.released", {})
         with self.lock:
             self.sessions.pop(session_id, None)

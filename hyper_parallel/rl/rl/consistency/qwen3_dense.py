@@ -129,27 +129,23 @@ def _install_batch_invariant_sum_compatibility() -> None:
         "npu_reduce_sum_batch_invariant",
     )
 
+    def reduce_last_dimension(moved: Any, preserve_dim: bool) -> Any:
+        """Apply the batch-invariant operator after moving the reduced axis."""
+        return reduce_sum_op(moved, -1, preserve_dim)
+
     def reduce_sum(
         tensor: Any,
         dim: Optional[int] = None,
         keepdim: bool = False,
     ) -> Any:
         """Route non-last NPU reductions through a stable moved last axis."""
-        if (
-            getattr(tensor.device, "type", None) == "npu"
-            and isinstance(dim, int)
-            and tensor.dim() > 0
-            and dim % tensor.dim() != tensor.dim() - 1
-        ):
+        non_last_npu = getattr(tensor.device, "type", None) == "npu" and isinstance(dim, int)
+        if non_last_npu and tensor.dim() > 0 and dim % tensor.dim() != tensor.dim() - 1:
             return _reduce_non_last_dimension(
                 tensor,
                 dim,
                 keepdim,
-                lambda moved, preserve_dim: reduce_sum_op(
-                    moved,
-                    -1,
-                    preserve_dim,
-                ),
+                reduce_last_dimension,
             )
         return original_reduce_sum(tensor, dim, keepdim)
 

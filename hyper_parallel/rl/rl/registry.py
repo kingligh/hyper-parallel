@@ -13,6 +13,9 @@
 # limitations under the License.
 # ============================================================================
 """Small typed registry shared by public extension points."""
+
+__all__ = ["Registry"]
+
 from collections.abc import Iterator
 from typing import Any, Callable, Generic, TypeVar
 T = TypeVar("T")
@@ -74,4 +77,3 @@ class Registry(Generic[T]):
     def names(self) -> tuple[str, ...]:
         """Return registered names in deterministic order."""
         return tuple(sorted(self._items))
-__all__ = ["Registry"]

@@ -307,12 +307,9 @@ class CodexAgentProgram:
                 raise ValueError("Every Codex MCP server configuration must be a mapping")
             name = server.get("name")
             command = server.get("command")
-            if (
-                not isinstance(name, str)
-                or not name
-                or not isinstance(command, str)
-                or not command
-            ):
+            valid_name = isinstance(name, str) and bool(name)
+            valid_command = isinstance(command, str) and bool(command)
+            if not valid_name or not valid_command:
                 raise ValueError("Codex MCP server requires non-empty name and command")
             lines.extend(
                 (

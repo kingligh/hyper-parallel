@@ -340,8 +340,8 @@ class GRPOAlgorithm:
             action_mask=action_mask,
         )
 
+    @staticmethod
     def compute_critic_loss(
-        self,
         current_values: Any,
         old_values: Any,
         returns: Any,

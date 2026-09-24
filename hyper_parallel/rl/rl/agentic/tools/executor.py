@@ -204,7 +204,8 @@ class JsonFunctionCallProtocol:
         ]}
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
-    def format_error(self, message: str, context: TurnContext) -> str:
+    @staticmethod
+    def format_error(message: str, context: TurnContext) -> str:
         """Return structured feedback so the model can self-correct."""
         del context
         return json.dumps({"interaction_error": message}, ensure_ascii=False, separators=(",", ":"))
