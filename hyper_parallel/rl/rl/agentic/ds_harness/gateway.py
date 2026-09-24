@@ -186,6 +186,7 @@ class _State:
         self.event(session_id, "session.registered", payload)
 
     def get(self, session_id: str) -> _Session:
+        """Return a registered session or reject an unknown identifier."""
         with self.lock:
             try:
                 return self.sessions[session_id]
@@ -193,12 +194,14 @@ class _State:
                 raise ValueError(f"Unknown DeepSeek session: {session_id}") from error
 
     def remove(self, session_id: str) -> None:
+        """Release a completed session while retaining its artifacts."""
         self.get(session_id)
         self.event(session_id, "session.released", {})
         with self.lock:
             self.sessions.pop(session_id, None)
 
     def save_completion(self, session_id: str, record: dict[str, Any]) -> None:
+        """Store a completion with its session-local ordinal."""
         session = self.get(session_id)
         with self.lock:
             record["ordinal"] = len(session.completions)
@@ -219,12 +222,8 @@ class _State:
             "session_id": session_id,
             "payload": payload,
         }
-        with (
-            self.lock,
-            (session.artifact_dir / "gateway-events.jsonl").open(
-                "a", encoding="utf-8"
-            ) as stream,
-        ):
+        event_path = session.artifact_dir / "gateway-events.jsonl"
+        with self.lock, event_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
@@ -424,6 +423,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # BaseHTTPRequestHandler's first argument is positional; avoid shadowing the format builtin.
     def log_message(self, format_string: str, *args: Any) -> None:  # pylint: disable=arguments-differ
+        """Write HTTP diagnostics through the gateway logger."""
         logger.debug("DeepSeek gateway: " + format_string, *args)
 
 

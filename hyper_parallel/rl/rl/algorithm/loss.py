@@ -414,8 +414,8 @@ class PPOAlgorithm:
         )
         self._kl_coefficient = config.kl_coef
 
+    @staticmethod
     def compute_advantages(
-        self,
         rewards: Any,
         group_ids: Optional[tuple[Optional[str], ...]] = None,
     ) -> Any:

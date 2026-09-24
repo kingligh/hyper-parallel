@@ -21,10 +21,30 @@ import asyncio
 import importlib
 import inspect
 import json
+import logging
 import sys
 from typing import Any, Mapping
 
 from rl.agentic.tools import ToolRegistry
+
+
+class _ProtocolResponseHandler(logging.StreamHandler):
+    """Write one JSON-RPC line and propagate stdout failures to the server."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Preserve direct stdout write and flush failure semantics."""
+        self.stream.write(self.format(record) + self.terminator)
+        self.flush()
+
+
+def _response_logger() -> logging.Logger:
+    """Create an isolated logger whose only output is the MCP stdout stream."""
+    logger = logging.Logger("rl.agentic.mcp_server.responses", level=logging.INFO)
+    # Global application logging settings must not suppress protocol responses.
+    logger.manager = logging.Manager(logger)
+    logger.propagate = False
+    logger.addHandler(_ProtocolResponseHandler(sys.stdout))
+    return logger
 
 
 def _load_registry(factory_path: str, settings: Mapping[str, Any]) -> ToolRegistry:
@@ -98,6 +118,7 @@ async def _dispatch(registry: ToolRegistry, request: Mapping[str, Any]) -> Any:
 async def _serve(registry: ToolRegistry) -> None:
     """Process newline-delimited MCP requests from standard input."""
     loop = asyncio.get_running_loop()
+    response_logger = _response_logger()
     while True:
         line = await loop.run_in_executor(None, sys.stdin.buffer.readline)
         if not line:
@@ -118,8 +139,7 @@ async def _serve(registry: ToolRegistry) -> None:
                 "id": request_id,
                 "error": {"code": -32603, "message": str(error)},
             }
-        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        response_logger.info("%s", json.dumps(response, ensure_ascii=False))
 
 
 def main() -> None:

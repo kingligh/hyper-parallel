@@ -13,6 +13,12 @@
 # limitations under the License.
 # ============================================================================
 """Lightweight vLLM plugin for Hyper-RL model registration."""
+
+__all__ = [
+    "HYPER_QWEN3_ARCHITECTURE",
+    "register_hyper_models",
+]
+
 import logging
 import os
 from importlib.metadata import PackageNotFoundError
@@ -92,9 +98,3 @@ def register_hyper_models() -> None:
     for architecture, model_class in _HYPER_MODELS.items():
         if architecture not in supported_architectures:
             ModelRegistry.register_model(architecture, model_class)
-
-
-__all__ = [
-    "HYPER_QWEN3_ARCHITECTURE",
-    "register_hyper_models",
-]

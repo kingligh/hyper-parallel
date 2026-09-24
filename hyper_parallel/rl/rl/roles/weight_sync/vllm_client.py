@@ -146,13 +146,12 @@ def direct_reshard_workers(
     by_coordinate = {}
     for worker in workers:
         coordinate = (int(worker["dp_rank"]), int(worker["tp_rank"]))
-        if (
-            coordinate in by_coordinate
-            or int(worker["dp_size"]) not in (1, data_parallel_size)
-            or int(worker["tp_size"]) != tensor_parallel_size
-            or not 0 <= coordinate[0] < data_parallel_size
-            or not 0 <= coordinate[1] < tensor_parallel_size
-        ):
+        if coordinate in by_coordinate:
+            raise RuntimeError(f"Direct reshard worker has invalid topology: {worker}")
+        if (int(worker["dp_size"]) not in (1, data_parallel_size)
+                or int(worker["tp_size"]) != tensor_parallel_size):
+            raise RuntimeError(f"Direct reshard worker has invalid topology: {worker}")
+        if not 0 <= coordinate[0] < data_parallel_size or not 0 <= coordinate[1] < tensor_parallel_size:
             raise RuntimeError(f"Direct reshard worker has invalid topology: {worker}")
         by_coordinate[coordinate] = worker
     dp_ranks = sorted({coordinate[0] for coordinate in by_coordinate})

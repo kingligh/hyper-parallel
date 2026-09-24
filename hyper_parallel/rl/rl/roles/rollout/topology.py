@@ -52,6 +52,50 @@ def _device_ids(value: object, field: str) -> tuple[str, ...]:
     return normalized_devices
 
 
+def _visible_rollout_devices(
+    config: Mapping[str, object],
+    environment: Mapping[str, str],
+    deployment: str,
+    parallel_sizes: tuple[int, int],
+    trainer_world_size: int,
+) -> tuple[str, ...]:
+    """Validate and return the rollout's physical device IDs."""
+    data_parallel_size, tensor_parallel_size = parallel_sizes
+    rollout_device_count = data_parallel_size * tensor_parallel_size
+    if deployment == "colocated":
+        if "visible_devices" in config:
+            raise ValueError(
+                "Colocated rollout derives its physical NPUs from the Trainer; "
+                "remove rollout.vllm.visible_devices"
+            )
+        if rollout_device_count != trainer_world_size:
+            raise ValueError(
+                "Colocated rollout devices must match the Trainer world: "
+                f"dp={data_parallel_size}, tp={tensor_parallel_size}, "
+                f"world_size={trainer_world_size}"
+            )
+        training_devices = _device_ids(
+            environment.get(
+                "ASCEND_RT_VISIBLE_DEVICES",
+                ",".join(str(rank) for rank in range(trainer_world_size)),
+            ),
+            "ASCEND_RT_VISIBLE_DEVICES",
+        )
+        if len(training_devices) != trainer_world_size:
+            raise ValueError(
+                "Colocated rollout requires one visible NPU per trainer rank: "
+                f"world_size={trainer_world_size}, devices={training_devices}"
+            )
+        return training_devices
+    rollout_devices = _device_ids(config.get("visible_devices"), "rollout.vllm.visible_devices")
+    if len(rollout_devices) != rollout_device_count:
+        raise ValueError(
+            "Disjoint rollout requires DP x TP devices: "
+            f"expected={rollout_device_count}, got={rollout_devices}"
+        )
+    return rollout_devices
+
+
 def resolve_vllm_rollout_topology(
     config: Mapping[str, object],
     environment: Mapping[str, str],
@@ -77,43 +121,10 @@ def resolve_vllm_rollout_topology(
             "Invalid local trainer topology: "
             f"rank={trainer_rank}, world_size={trainer_world_size}"
         )
-
-    if deployment == "colocated":
-        if "visible_devices" in config:
-            raise ValueError(
-                "Colocated rollout derives its physical NPUs from the Trainer; "
-                "remove rollout.vllm.visible_devices"
-            )
-        if rollout_device_count != trainer_world_size:
-            raise ValueError(
-                "Colocated rollout devices must match the Trainer world: "
-                f"dp={data_parallel_size}, tp={tensor_parallel_size}, "
-                f"world_size={trainer_world_size}"
-            )
-        training_devices = _device_ids(
-            environment.get(
-                "ASCEND_RT_VISIBLE_DEVICES",
-                ",".join(str(rank) for rank in range(trainer_world_size)),
-            ),
-            "ASCEND_RT_VISIBLE_DEVICES",
-        )
-        if len(training_devices) != trainer_world_size:
-            raise ValueError(
-                "Colocated rollout requires one visible NPU per trainer rank: "
-                f"world_size={trainer_world_size}, devices={training_devices}"
-            )
-        visible_devices = training_devices
-    else:
-        rollout_devices = _device_ids(
-            config.get("visible_devices"),
-            "rollout.vllm.visible_devices",
-        )
-        if len(rollout_devices) != rollout_device_count:
-            raise ValueError(
-                "Disjoint rollout requires DP x TP devices: "
-                f"expected={rollout_device_count}, got={rollout_devices}"
-            )
-        visible_devices = rollout_devices
+    visible_devices = _visible_rollout_devices(
+        config, environment, deployment,
+        (data_parallel_size, tensor_parallel_size), trainer_world_size,
+    )
     engine_count = data_parallel_size
     server_owner = trainer_rank == 0
     host = str(config.get("host", "127.0.0.1"))

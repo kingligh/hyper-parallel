@@ -14,6 +14,20 @@
 # ============================================================================
 """Validate Hyper-RL configuration and adapt it to Hyper-Parallel."""
 
+__all__ = [
+    "build_model_registration",
+    "build_runtime_config",
+    "optional_mapping",
+    "required_mapping",
+    "resolve_vllm_automatic_limits",
+    "model_trust_remote_code",
+    "tokenizer_trust_remote_code",
+    "trainer_attention_implementation",
+    "uses_colocated_vllm",
+    "validate_config",
+    "validate_rollout_and_agentic",
+]
+
 import json
 import math
 import os
@@ -23,21 +37,6 @@ from typing import Any, Mapping, Optional
 
 import torch
 
-from hyper_parallel.components.checkpoint.config import CheckpointingConfig
-from hyper_parallel.components.optim import AdamW, MultiLRScheduler
-from hyper_parallel.models.build_options import (
-    FSDP2Config,
-    FSDP2MixedPrecisionConfig,
-)
-from hyper_parallel.trainer.config import (
-    AcceleratorConfig,
-    ActivationCheckpointConfig,
-    MixedPrecisionConfig,
-    OptimizerConfig,
-    Target,
-    TrainerConfig,
-    TrainingConfig,
-)
 from rl.agentic.core.types import InteractionMode
 from rl.agentic.envs.environment import ENVIRONMENTS, load_agentic_module
 from rl.algorithm.loss import RLAlgorithm
@@ -54,6 +53,21 @@ from rl.roles.policy.critic import build_value_model
 from rl.roles.qwen3_builder import build_causal_lm
 from rl.roles.rollout import ROLLOUT_ENGINES
 from rl.roles.weight_sync.config import resolve_weight_sync_config
+from hyper_parallel.components.checkpoint.config import CheckpointingConfig
+from hyper_parallel.components.optim import AdamW, MultiLRScheduler
+from hyper_parallel.models.build_options import (
+    FSDP2Config,
+    FSDP2MixedPrecisionConfig,
+)
+from hyper_parallel.trainer.config import (
+    AcceleratorConfig,
+    ActivationCheckpointConfig,
+    MixedPrecisionConfig,
+    OptimizerConfig,
+    Target,
+    TrainerConfig,
+    TrainingConfig,
+)
 
 _HCCL_MIN_PORT = 1024
 _HCCL_MAX_PORT = 65520
@@ -220,13 +234,14 @@ def _trainer_topology(accelerator: Mapping[str, Any]) -> dict[str, int]:
             "Trainer parallel sizes must be positive integers, "
             f"got {non_positive}"
         )
-    unsupported = {
-        name: size
-        for name, size in topology.items()
-        if (name == "dp_replicate" and size != 1)
-        or (name == "tp" and size not in (1, 2))
-        or (name in ("cp", "pp") and size != 1)
-    }
+    unsupported = {}
+    for name, size in topology.items():
+        if name == "dp_replicate" and size != 1:
+            unsupported[name] = size
+        elif name == "tp" and size not in (1, 2):
+            unsupported[name] = size
+        elif name in ("cp", "pp") and size != 1:
+            unsupported[name] = size
     if unsupported:
         raise ValueError(
             "Hyper-RL Trainer currently supports dp_replicate=1, TP1/TP2, "
@@ -672,7 +687,7 @@ def validate_config(config: Mapping[str, Any], algorithm: RLAlgorithm) -> None:
     _validate_evaluation(evaluation)
     validate_rollout_and_agentic(rollout, agentic, accelerator, model_registration)
     if rollout.get("engine") != "vllm":
-        _trainer_topology(accelerator)
+        _ = _trainer_topology(accelerator)
     _validate_checkpoint(required_mapping(train, "checkpoint"))
     _validate_logging(required_mapping(config, "logging"))
 
@@ -1066,6 +1081,15 @@ def _build_checkpoint_config(
     )
 
 
+def _runtime_backend(train_config: Mapping[str, Any], accelerator_config: Mapping[str, Any]) -> str:
+    """Include CPU communication when optimizer state is offloaded."""
+    backend = str(train_config.get("comm_backend") or "hccl")
+    if bool(accelerator_config.get("cpu_offload", False)) and ":" not in backend:
+        device_type = (torch.accelerator.current_accelerator() or torch.device("cpu")).type
+        backend = f"cpu:gloo,{device_type}:{backend}"
+    return backend
+
+
 def build_runtime_config(config: Mapping[str, Any], *, critic: bool = False) -> TrainerConfig:
     """Translate Hyper-RL YAML into the HyperAutoModel runtime configuration."""
     model_config = required_mapping(config, "model")
@@ -1081,17 +1105,12 @@ def build_runtime_config(config: Mapping[str, Any], *, critic: bool = False) -> 
     if model_config.get("config_overrides") not in (None, {}):
         raise ValueError("model.config_overrides is not supported by HyperAutoModel")
 
-    prompt_batch_size = int(train_config.get("prompt_batch_size", 1))
     topology = _trainer_topology(accelerator_config)
     dp_shard = topology["dp_shard"]
     trainer_dp_size = topology["dp_replicate"] * topology["dp_shard"]
-    cpu_offload = bool(accelerator_config.get("cpu_offload", False))
     param_dtype_name = str(mixed_precision_config.get("param_dtype", "bfloat16"))
     mixed_precision_enabled = bool(mixed_precision_config.get("enabled", True))
-    backend = str(train_config.get("comm_backend") or "hccl")
-    if cpu_offload and ":" not in backend:
-        device_type = (torch.accelerator.current_accelerator() or torch.device("cpu")).type
-        backend = f"cpu:gloo,{device_type}:{backend}"
+    backend = _runtime_backend(train_config, accelerator_config)
 
     return TrainerConfig(
         model=_build_model_target(
@@ -1105,7 +1124,7 @@ def build_runtime_config(config: Mapping[str, Any], *, critic: bool = False) -> 
             train_config,
             optimizer_config,
             trainer_dp_size,
-            prompt_batch_size,
+            int(train_config.get("prompt_batch_size", 1)),
             backend,
         ),
         accelerator=_build_accelerator_config(accelerator_config),
@@ -1120,19 +1139,6 @@ def build_runtime_config(config: Mapping[str, Any], *, critic: bool = False) -> 
     )
 
 
-__all__ = [
-    "build_model_registration",
-    "build_runtime_config",
-    "optional_mapping",
-    "required_mapping",
-    "resolve_vllm_automatic_limits",
-    "model_trust_remote_code",
-    "tokenizer_trust_remote_code",
-    "trainer_attention_implementation",
-    "uses_colocated_vllm",
-    "validate_config",
-    "validate_rollout_and_agentic",
-]
 
 
 def _validate_vllm_hccl_ports(vllm: Mapping[str, Any]) -> None:

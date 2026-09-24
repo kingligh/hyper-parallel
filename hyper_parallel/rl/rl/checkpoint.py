@@ -14,6 +14,8 @@
 # ============================================================================
 """Top-level persistent checkpoint lifecycle for synchronous RL training."""
 
+__all__ = ["RLCheckpointManager"]
+
 import json
 import logging
 import os
@@ -369,6 +371,3 @@ class RLCheckpointManager:
             dist.get_rank(),
             checkpoint_dir,
         )
-
-
-__all__ = ["RLCheckpointManager"]

@@ -33,8 +33,8 @@ class ConsoleBackend:
             world_size,
         )
 
+    @staticmethod
     def log(
-        self,
         metrics: Mapping[str, float],
         step: int,
         sample_tables: SampleTables,
@@ -46,5 +46,6 @@ class ConsoleBackend:
         )
         logger.info("step=%d | %s", step, rendered)
 
-    def finish(self) -> None:
+    @staticmethod
+    def finish() -> None:
         """Console logging owns no external resources."""

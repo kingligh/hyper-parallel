@@ -341,6 +341,19 @@ def _validate_update(worker: Any, policy_version: int, *, transport: str) -> int
     return version
 
 
+def _validate_direct_parameter(
+    parameter: Any, entry: Mapping[str, Any], transport: str, name: str,
+) -> None:
+    """Check that one rollout parameter can receive the planned fragment."""
+    destination_dtype = getattr(torch, str(entry.get("destination_dtype_name", entry["dtype_name"])))
+    destination_element_size = int(entry.get("destination_element_size", entry["element_size"]))
+    if int(parameter.element_size()) != destination_element_size or parameter.dtype != destination_dtype:
+        raise ValueError(
+            f"{transport} parameter {name!r} dtype mismatch: "
+            f"parameter={parameter.dtype}, destination={destination_dtype}"
+        )
+
+
 def _apply_direct_bucket(
     parameters: Mapping[str, Any],
     packed: Any,
@@ -357,29 +370,14 @@ def _apply_direct_bucket(
         if parameter is None:
             raise ValueError(f"{transport} parameter {name!r} is missing")
         source_dtype = getattr(torch, str(entry["dtype_name"]))
-        destination_dtype = getattr(
-            torch,
-            str(entry.get("destination_dtype_name", entry["dtype_name"])),
-        )
-        destination_element_size = int(
-            entry.get("destination_element_size", entry["element_size"])
-        )
-        if (
-            int(parameter.element_size()) != destination_element_size
-            or parameter.dtype != destination_dtype
-        ):
-            raise ValueError(
-                f"{transport} parameter {name!r} dtype mismatch: "
-                f"parameter={parameter.dtype}, destination={destination_dtype}"
-            )
+        _validate_direct_parameter(parameter, entry, transport, name)
         lengths = tuple(
             int(value)
             for value in entry.get("destination_lengths", entry["lengths"])
         )
         starts = tuple(int(value) for value in entry["destination_starts"])
         num_bytes = int(entry["num_bytes"])
-        offset = int(entry["buffer_offset"])
-        fragment = packed.narrow(0, offset, num_bytes).view(source_dtype).view(lengths)
+        fragment = packed.narrow(0, int(entry["buffer_offset"]), num_bytes).view(source_dtype).view(lengths)
         destination_slice = tuple(
             slice(start, start + length) for start, length in zip(starts, lengths)
         )

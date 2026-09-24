@@ -14,6 +14,44 @@
 # ============================================================================
 """Business-neutral Agentic RL contracts and runtime orchestration."""
 
+__all__ = [
+    "Action",
+    "AgentAction",
+    "AgentProgram",
+    "AgentRunner",
+    "AgentSession",
+    "ENVIRONMENTS",
+    "Environment",
+    "EpisodeContext",
+    "EpisodeResult",
+    "INTERACTION_PROTOCOLS",
+    "InteractionMode",
+    "InteractionProtocol",
+    "JsonFunctionCallProtocol",
+    "Observation",
+    "OpenAIToolCallProtocol",
+    "ParsedAction",
+    "ProgramAgentRunner",
+    "ResponseParser",
+    "RewardFunction",
+    "RewardResult",
+    "TerminationReason",
+    "Tool",
+    "ToolCall",
+    "ToolEnvironment",
+    "ToolExecutor",
+    "ToolExecutorProtocol",
+    "ToolHandler",
+    "ToolRegistry",
+    "ToolResult",
+    "Transition",
+    "TurnContext",
+    "TurnResult",
+    "compute_rule_reward",
+    "extract_answer",
+    "load_agentic_module",
+]
+
 from importlib import import_module
 from typing import Any
 
@@ -72,6 +110,3 @@ def __getattr__(name: str) -> Any:  # pylint: disable=invalid-name
 def __dir__() -> list[str]:  # pylint: disable=invalid-name
     """Expose lazy public symbols to interactive callers."""
     return sorted((*globals(), *_EXPORTS))
-
-
-__all__ = sorted(_EXPORTS)

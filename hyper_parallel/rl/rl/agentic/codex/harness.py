@@ -416,84 +416,93 @@ class CodexAgentProgram:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
-
-        async def drain_stdout() -> None:
-            if process.stdout is None:
-                return
-            with (artifact_dir / "codex-events.jsonl").open("w", encoding="utf-8") as stream:
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        break
-                    text = line.decode("utf-8", errors="replace").rstrip("\r\n")
-                    stdout_lines.append(text)
-                    stream.write(text + "\n")
-                    stream.flush()
-
-        async def drain_stderr() -> None:
-            if process.stderr is None:
-                return
-            with (artifact_dir / "codex-stderr.log").open("w", encoding="utf-8") as stream:
-                while True:
-                    line = await process.stderr.readline()
-                    if not line:
-                        break
-                    text = line.decode("utf-8", errors="replace")
-                    stderr_lines.append(text.rstrip("\r\n"))
-                    stream.write(text)
-                    stream.flush()
-
         timeout = float(self.config.get("timeout_seconds", 1800.0))
-        stdout_task = asyncio.create_task(drain_stdout())
-        stderr_task = asyncio.create_task(drain_stderr())
-        try:
-            await asyncio.wait_for(process.wait(), timeout)
-        except asyncio.TimeoutError as error:
+        stdout_lines, stderr_lines = await _collect_codex_output(process, artifact_dir, timeout)
+        return_code = int(process.returncode or 0)
+        final_answer, diagnostic_events = _interpret_codex_output(
+            stdout_lines, stderr_lines, return_code, artifact_dir,
+        )
+        return final_answer, return_code, diagnostic_events
+
+
+async def _drain_codex_stream(
+    reader: Any, path: Path, lines: list[str], *, normalize_newlines: bool,
+) -> None:
+    """Persist one child stream while retaining its decoded lines for diagnostics."""
+    if reader is None:
+        return
+    with path.open("w", encoding="utf-8") as stream:
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            decoded = line.decode("utf-8", errors="replace")
+            text = decoded.rstrip("\r\n")
+            lines.append(text)
+            stream.write(text + "\n" if normalize_newlines else decoded)
+            stream.flush()
+
+
+async def _collect_codex_output(
+    process: Any, artifact_dir: Path, timeout: float,
+) -> tuple[list[str], list[str]]:
+    """Drain both child pipes and preserve timeout and cancellation cleanup."""
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stdout_task = asyncio.create_task(
+        _drain_codex_stream(process.stdout, artifact_dir / "codex-events.jsonl", stdout_lines,
+                            normalize_newlines=True)
+    )
+    stderr_task = asyncio.create_task(
+        _drain_codex_stream(process.stderr, artifact_dir / "codex-stderr.log", stderr_lines,
+                            normalize_newlines=False)
+    )
+    try:
+        await asyncio.wait_for(process.wait(), timeout)
+    except asyncio.TimeoutError as error:
+        process.kill()
+        await process.wait()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        raise RuntimeError(f"Codex episode timed out after {timeout} seconds") from error
+    except asyncio.CancelledError:
+        if process.returncode is None:
             process.kill()
             await process.wait()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            raise RuntimeError(f"Codex episode timed out after {timeout} seconds") from error
-        except asyncio.CancelledError:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            raise
-        await asyncio.gather(stdout_task, stderr_task)
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        raise
+    await asyncio.gather(stdout_task, stderr_task)
+    return stdout_lines, stderr_lines
 
-        stderr_tail = "\n".join(stderr_lines[-20:]).strip()
-        artifact_hint = f"artifacts: {artifact_dir}"
-        return_code = int(process.returncode or 0)
-        if return_code != 0:
-            detail = f"; stderr tail:\n{stderr_tail}" if stderr_tail else ""
-            raise RuntimeError(
-                f"Codex exited with status {return_code}{detail}; {artifact_hint}"
-            )
 
-        final_answer, diagnostic_events, failed_events = _classify_codex_events(
-            stdout_lines
+def _interpret_codex_output(
+    stdout_lines: list[str], stderr_lines: list[str], return_code: int, artifact_dir: Path,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Validate child status and return its final answer and diagnostic events."""
+    stderr_tail = "\n".join(stderr_lines[-20:]).strip()
+    artifact_hint = f"artifacts: {artifact_dir}"
+    if return_code != 0:
+        detail = f"; stderr tail:\n{stderr_tail}" if stderr_tail else ""
+        raise RuntimeError(f"Codex exited with status {return_code}{detail}; {artifact_hint}")
+    final_answer, diagnostic_events, failed_events = _classify_codex_events(stdout_lines)
+    if failed_events:
+        detail = f"; stderr tail:\n{stderr_tail}" if stderr_tail else ""
+        raise RuntimeError(
+            "Codex reported a failed event: "
+            f"{failed_events[-1]}{detail}; {artifact_hint}"
         )
-        if failed_events:
-            detail = f"; stderr tail:\n{stderr_tail}" if stderr_tail else ""
-            raise RuntimeError(
-                "Codex reported a failed event: "
-                f"{failed_events[-1]}{detail}; {artifact_hint}"
-            )
-        if not final_answer:
-            event_tail = "\n".join(stdout_lines[-10:]).strip()
-            details = []
-            if event_tail:
-                details.append(f"event tail:\n{event_tail}")
-            if stderr_tail:
-                details.append(f"stderr tail:\n{stderr_tail}")
-            suffix = f"; {'; '.join(details)}" if details else ""
-            raise RuntimeError(
-                "Codex JSONL did not contain a final agent message"
-                f"{suffix}; {artifact_hint}"
-            )
-        return final_answer, return_code, diagnostic_events
+    if not final_answer:
+        event_tail = "\n".join(stdout_lines[-10:]).strip()
+        details = []
+        if event_tail:
+            details.append(f"event tail:\n{event_tail}")
+        if stderr_tail:
+            details.append(f"stderr tail:\n{stderr_tail}")
+        suffix = f"; {'; '.join(details)}" if details else ""
+        raise RuntimeError(
+            "Codex JSONL did not contain a final agent message"
+            f"{suffix}; {artifact_hint}"
+        )
+    return final_answer, diagnostic_events
 
 
 class CodexProgramFactory(HarnessProgramFactory):

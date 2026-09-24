@@ -14,6 +14,8 @@
 # ============================================================================
 """Transformers Qwen3 adapter for the Hyper-vLLM runtime."""
 
+__all__ = ["HyperQwen3ForCausalLM"]
+
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
@@ -25,13 +27,13 @@ from vllm.config import VllmConfig
 from vllm.distributed import get_tp_group
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 
-from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
-from hyper_parallel.distributed import validate_model_compatibility
 from rl.roles.qwen3_builder import (
     Qwen3ShardingPlanner as ShardingPlanner,
     apply_qwen3_sharding_plan as apply_sharding_plan,
 )
 from rl.roles.rollout.consistency_models.qwen3.attention import Qwen3PagedAttention
+from hyper_parallel import DeviceMesh, distribute_tensor, mark_created_groups
+from hyper_parallel.distributed import validate_model_compatibility
 
 
 def join_prefix(prefix: str, suffix: str) -> str:
@@ -325,6 +327,3 @@ class HyperQwen3ForCausalLM(Qwen3ForCausalLM):
                 + ", ".join(sorted(missing_parameters))
             )
         return loaded_parameters
-
-
-__all__ = ["HyperQwen3ForCausalLM"]

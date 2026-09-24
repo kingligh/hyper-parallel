@@ -14,9 +14,8 @@
 # ============================================================================
 """Stable learning-role API."""
 
+__all__ = ["Actor", "Critic", "ModelRegistration"]
+
 from rl.roles.model_setup import ModelRegistration
 from rl.roles.policy.actor import Actor
 from rl.roles.policy.critic import Critic
-
-
-__all__ = ["Actor", "Critic", "ModelRegistration"]

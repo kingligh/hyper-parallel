@@ -14,8 +14,7 @@
 # ============================================================================
 """Policy and value roles."""
 
+__all__ = ["Actor", "Critic"]
+
 from rl.roles.policy.actor import Actor
 from rl.roles.policy.critic import Critic
-
-
-__all__ = ["Actor", "Critic"]

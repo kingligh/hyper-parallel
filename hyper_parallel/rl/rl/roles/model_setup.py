@@ -253,7 +253,7 @@ def resolve_model(model: Mapping[str, Any]) -> ModelRegistration:
     )
     # Validate checkpoint identity and loader options before runtime construction.
     _ = registration.family
-    model_trust_remote_code(model)
-    tokenizer_trust_remote_code(model)
-    trainer_attention_implementation(model)
+    _ = model_trust_remote_code(model)
+    _ = tokenizer_trust_remote_code(model)
+    _ = trainer_attention_implementation(model)
     return registration

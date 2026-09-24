@@ -88,6 +88,7 @@ class WeightSource:
         state = _local_state_dict(payload, operation="weight publication")
         return alias_tied_embeddings(self.adapter.map_local_state_dict(state), self.model)
 
+
 def _validate_plan_sources(names: frozenset[str], state: Mapping[str, Any]) -> None:
     missing = sorted(names - state.keys())
     if missing:
@@ -128,15 +129,17 @@ class DirectReshardStrategy:
         rank_descriptions = [None] * dist.get_world_size()
         dist.all_gather_object(rank_descriptions, descriptions)
         sources = resolve_source_layouts(rank_descriptions)
+
+        def query_destinations() -> Any:
+            """Query every rollout worker through the synchronized coordinator."""
+            return direct_reshard_workers(
+                client,
+                data_parallel_size=self.data_parallel_size,
+                tensor_parallel_size=self.tensor_parallel_size,
+            )
+
         destinations = resolve_destination_layouts(
-            coordinator_call(
-                "direct reshard rollout layout query",
-                lambda: direct_reshard_workers(
-                    client,
-                    data_parallel_size=self.data_parallel_size,
-                    tensor_parallel_size=self.tensor_parallel_size,
-                ),
-            ),
+            coordinator_call("direct reshard rollout layout query", query_destinations),
             {source.name: source.global_shape for source in sources},
         )
         return sources, destinations

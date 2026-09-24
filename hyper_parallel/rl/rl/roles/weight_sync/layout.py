@@ -18,7 +18,7 @@
 from dataclasses import dataclass, replace
 from itertools import product
 from math import prod
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,18 @@ class DestinationTensorLayout:
     def physical_permutation(self) -> tuple[int, ...]:
         """Return the canonical-to-physical axis order."""
         return self.destination_permutation or tuple(range(len(self.global_shape)))
+
+
+class _DestinationSignature(NamedTuple):
+    """TP-invariant destination metadata used to compare worker descriptions."""
+
+    placement: str
+    shard_dim: Any
+    destination_name: str
+    dtype_name: str
+    element_size: int
+    permutation: tuple[int, ...]
+    accepted_source_dtypes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -385,15 +397,18 @@ def _validate_source_coverage(name, regions, global_shape):
     """Reject overlapping or incomplete source regions before planning transfers."""
     for index, left in enumerate(regions):
         for right in regions[index + 1:]:
-            if all(
-                max(left_start, right_start) < min(left_end, right_end)
-                for left_start, left_end, right_start, right_end in zip(
-                    left.starts, left.ends, right.starts, right.ends,
-                )
-            ):
+            if _regions_overlap(left, right):
                 raise ValueError(f"Direct reshard source tensor {name!r} regions overlap")
     if sum(region.numel for region in regions) != prod(global_shape):
         raise ValueError(f"Direct reshard source tensor {name!r} regions do not cover global shape")
+
+
+def _regions_overlap(left: TensorRegion, right: TensorRegion) -> bool:
+    """Return whether two axis-aligned regions intersect on every axis."""
+    for left_start, left_end, right_start, right_end in zip(left.starts, left.ends, right.starts, right.ends):
+        if max(left_start, right_start) >= min(left_end, right_end):
+            return False
+    return True
 
 
 def _destination_shard_offsets(
@@ -424,7 +439,7 @@ def _destination_signature(
     tensor: Mapping[str, Any],
     name: str,
     rank: int,
-) -> tuple[Any, ...]:
+) -> _DestinationSignature:
     """Return the TP-invariant part of one destination description."""
     permutation = tuple(
         int(value)
@@ -435,14 +450,14 @@ def _destination_signature(
             f"Rollout parameter {name!r} has invalid destination permutation "
             f"{permutation}"
         )
-    return (
-        str(tensor["placement"]),
-        tensor.get("shard_dim"),
-        str(tensor.get("destination_name", name)),
-        str(tensor["dtype_name"]),
-        int(tensor["element_size"]),
-        permutation,
-        tuple(str(value) for value in tensor.get("accepted_source_dtypes", ())),
+    return _DestinationSignature(
+        placement=str(tensor["placement"]),
+        shard_dim=tensor.get("shard_dim"),
+        destination_name=str(tensor.get("destination_name", name)),
+        dtype_name=str(tensor["dtype_name"]),
+        element_size=int(tensor["element_size"]),
+        permutation=permutation,
+        accepted_source_dtypes=tuple(str(value) for value in tensor.get("accepted_source_dtypes", ())),
     )
 
 
@@ -575,14 +590,9 @@ def _transfer_entry(
     intersection: TensorRegion,
 ) -> TransferEntry:
     """Translate one global intersection into source and destination offsets."""
-    source_starts = tuple(
-        local + start - base
-        for local, start, base in zip(
-            source.local_starts,
-            intersection.starts,
-            source.region.starts,
-        )
-    )
+    source_starts = []
+    for local, start, base in zip(source.local_starts, intersection.starts, source.region.starts):
+        source_starts.append(local + start - base)
     destination_offsets = tuple(
         start - base
         for start, base in zip(
@@ -590,19 +600,15 @@ def _transfer_entry(
             destination.region.starts,
         )
     )
-    destination_starts = tuple(
-        local + destination_offsets[axis]
-        for local, axis in zip(
-            destination.local_starts,
-            destination.physical_permutation,
-        )
-    )
+    destination_starts = []
+    for local, axis in zip(destination.local_starts, destination.physical_permutation):
+        destination_starts.append(local + destination_offsets[axis])
     return TransferEntry(
         name=source.name,
         dtype_name=source.dtype_name,
         element_size=source.element_size,
-        source_starts=source_starts,
-        destination_starts=destination_starts,
+        source_starts=tuple(source_starts),
+        destination_starts=tuple(destination_starts),
         lengths=intersection.lengths,
         destination_name=destination.target_name,
         source_name=source.source_key,
@@ -625,6 +631,34 @@ def _validate_coverage(
                 f"Direct reshard plan covers {actual} values for {name!r} TP rank "
                 f"{destination.tp_rank}, expected {destination.region.numel}"
             )
+
+
+def _append_routes_for_name(
+    name: str,
+    source_layouts: Sequence[SourceTensorLayout],
+    destination_layouts: Sequence[DestinationTensorLayout],
+    route_entries: dict[tuple[int, int], list[TransferEntry]],
+    coverage: dict[tuple[str, int], int],
+) -> None:
+    """Add every compatible source-to-destination intersection for one tensor."""
+    for source in source_layouts:
+        for destination in destination_layouts:
+            dtype_compatible = (
+                source.dtype_name == destination.dtype_name
+                and source.element_size == destination.element_size
+            ) or source.dtype_name in destination.accepted_source_dtypes
+            if source.global_shape != destination.global_shape or not dtype_compatible:
+                raise ValueError(
+                    f"Direct reshard tensor contract mismatch for {name!r}: "
+                    f"source={(source.global_shape, source.dtype_name)}, "
+                    f"destination={(destination.global_shape, destination.dtype_name)}"
+                )
+            intersection = _intersect_regions(source.region, destination.region)
+            if intersection is None:
+                continue
+            entry = _transfer_entry(source, destination, intersection)
+            route_entries.setdefault((source.source_rank, destination.tp_rank), []).append(entry)
+            coverage[(name, destination.tp_rank)] = coverage.get((name, destination.tp_rank), 0) + entry.numel
 
 
 def build_direct_reshard_plan(
@@ -651,31 +685,10 @@ def build_direct_reshard_plan(
         )
     route_entries: dict[tuple[int, int], list[TransferEntry]] = {}
     coverage: dict[tuple[str, int], int] = {}
-    for name in sorted(sources_by_name):
-        for source in sources_by_name[name]:
-            for destination in destinations_by_name[name]:
-                dtype_compatible = (
-                    source.dtype_name == destination.dtype_name
-                    and source.element_size == destination.element_size
-                ) or source.dtype_name in destination.accepted_source_dtypes
-                if source.global_shape != destination.global_shape or not dtype_compatible:
-                    raise ValueError(
-                        f"Direct reshard tensor contract mismatch for {name!r}: "
-                        f"source={(source.global_shape, source.dtype_name)}, "
-                        f"destination={(destination.global_shape, destination.dtype_name)}"
-                    )
-                intersection = _intersect_regions(
-                    source.region,
-                    destination.region,
-                )
-                if intersection is None:
-                    continue
-                entry = _transfer_entry(source, destination, intersection)
-                route_entries.setdefault((source.source_rank, destination.tp_rank), []).append(entry)
-                coverage[(name, destination.tp_rank)] = (
-                    coverage.get((name, destination.tp_rank), 0) + entry.numel
-                )
-        _validate_coverage(name, destinations_by_name[name], coverage)
+    for name, source_layouts in sorted(sources_by_name.items()):
+        destination_layouts = destinations_by_name.get(name, ())
+        _append_routes_for_name(name, source_layouts, destination_layouts, route_entries, coverage)
+        _validate_coverage(name, destination_layouts, coverage)
     tp_sizes = {destination.tp_size for destination in destinations}
     if len(tp_sizes) != 1:
         raise ValueError(f"Direct reshard destination TP sizes differ: {sorted(tp_sizes)}")
@@ -785,13 +798,8 @@ def _parameter_destination_layouts(name, tensors, global_shape, tp_size):
             name, placement, local_shape, global_shape, shard_dim,
             shard_offsets[tp_rank] if placement == "shard" else None,
         )
-        destination_starts = tuple(
-            int(value)
-            for value in tensor.get(
-                "destination_starts",
-                [0] * len(global_shape),
-            )
-        )
+        offset_values = tensor.get("destination_starts", [0] * len(global_shape))
+        destination_starts = tuple(int(value) for value in offset_values)
         if len(destination_starts) != len(global_shape):
             raise ValueError(
                 f"Rollout parameter {name!r} destination offset rank mismatch: "

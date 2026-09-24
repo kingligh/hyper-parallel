@@ -14,6 +14,12 @@
 # ============================================================================
 """Qwen3 dense replacements backed by generic high-performance modules."""
 
+__all__ = [
+    "replace_qwen3_flash_attention",
+    "replace_qwen3_rms_norm",
+    "replace_qwen3_swiglu_mlp",
+]
+
 from collections.abc import Mapping
 from typing import Any
 
@@ -82,10 +88,3 @@ def replace_qwen3_swiglu_mlp(
     from hyper_parallel.components.modules import SwiGLUMLP  # pylint: disable=C0415
 
     return SwiGLUMLP(module=module, module_fqn=module_fqn, context=context)
-
-
-__all__ = [
-    "replace_qwen3_flash_attention",
-    "replace_qwen3_rms_norm",
-    "replace_qwen3_swiglu_mlp",
-]

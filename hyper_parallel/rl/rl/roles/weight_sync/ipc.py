@@ -157,8 +157,9 @@ class IPCWeightTransport:
                 if target_tp_rank < 0 or coordinate[1] == target_tp_rank
                 else 0
             )
-            if (coordinate in received or coordinate not in expected
-                    or result.get("physical_device_id") != expected[coordinate]
+            if coordinate in received or coordinate not in expected:
+                raise RuntimeError(f"IPC acknowledgement differs from the target bucket: {result}")
+            if (result.get("physical_device_id") != expected[coordinate]
                     or int(result.get("bytes", -1)) != expected_bytes):
                 raise RuntimeError(f"IPC acknowledgement differs from the target bucket: {result}")
             received.add(coordinate)

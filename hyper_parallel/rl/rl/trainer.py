@@ -26,12 +26,6 @@ import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer
 
-from hyper_parallel import hsdp_sync_stream
-from hyper_parallel.core.fully_shard.hsdp_utils import GroupInfo
-from hyper_parallel.trainer.runtime.distributed import (
-    create_distributed_setup_from_config,
-    initialize_distributed,
-)
 from rl.agentic.codex import CodexRuntime
 from rl.agentic.ds_harness import DeepSeekRuntime
 from rl.algorithm.loss import build_algorithm
@@ -85,6 +79,12 @@ from rl.utils.monitoring.metrics import (
     summarize_training_diagnostics,
 )
 from rl.utils.monitoring.tracker import TrainingTracker
+from hyper_parallel import hsdp_sync_stream
+from hyper_parallel.core.fully_shard.hsdp_utils import GroupInfo
+from hyper_parallel.trainer.runtime.distributed import (
+    create_distributed_setup_from_config,
+    initialize_distributed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,40 @@ def _iter_state_tensors(value: Any):
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _iter_state_tensors(item)
+
+
+def _validate_shared_vllm_metadata(
+    metadata: list[Any], deployment: str, world_size: int, expected_devices: int,
+) -> None:
+    """Require all trainer ranks to agree on one local vLLM endpoint and NPU set."""
+    for rank, rank_metadata in enumerate(metadata):
+        rank_local_world_size, _, _, rank_devices = rank_metadata
+        if int(rank_local_world_size) != world_size:
+            raise ValueError(
+                "The shared vLLM rollout path is single-node only: "
+                f"rank={rank}, world_size={world_size}, local_world_size={rank_local_world_size}"
+            )
+        device_ids = [device.strip() for device in rank_devices.split(",")]
+        if (
+            len(device_ids) != expected_devices
+            or not all(device_ids)
+            or len(set(device_ids)) != expected_devices
+        ):
+            raise ValueError(
+                f"Shared {deployment} rollout requires its full unique physical NPU set on every rank: "
+                f"rank={rank}, devices={rank_devices!r}, expected={expected_devices}"
+            )
+    endpoints = [(host, port) for _, host, port, _ in metadata]
+    if len(set(endpoints)) != 1:
+        raise ValueError(
+            f"Shared {deployment} rollout requires the same endpoint on every rank: endpoints={endpoints!r}"
+        )
+    device_mappings = [rank_devices for _, _, _, rank_devices in metadata]
+    if len(set(device_mappings)) != 1:
+        raise ValueError(
+            f"Shared {deployment} rollout requires the same full physical NPU set on every rank: "
+            f"mappings={device_mappings!r}"
+        )
 
 
 class SyncTrainer:
@@ -425,22 +459,7 @@ class SyncTrainer:
         timings["update_actor"] = time.perf_counter() - stage_started
         if self._consistency_profile != CONSISTENCY_PROFILE_OFF:
             stage_started = time.perf_counter()
-            post_update_log_probs = self._run_rank_synchronized(
-                "post-update Actor log-probabilities",
-                lambda: self.actor.compute_log_probs(experience),
-            )
-            if post_update_log_probs is None:
-                raise RuntimeError(
-                    "Post-update Actor log-probability computation failed without a synchronized error"
-                )
-            diagnostic_metrics.update(
-                measure_post_update_old_policy_mismatch(
-                    experience,
-                    post_update_log_probs,
-                    group=self._dp_group_info.group,
-                    group_size=self.parallel_dims.dp_size,
-                )
-            )
+            diagnostic_metrics.update(self._post_update_mismatch(experience))
             timings["post_update_old_log_prob"] = time.perf_counter() - stage_started
         critic_update = None
         if self.critic is not None:
@@ -452,16 +471,7 @@ class SyncTrainer:
         timings["weight_sync"] = time.perf_counter() - stage_started
         timings["step"] = time.perf_counter() - step_started
         if collect_diagnostics:
-            diagnostic_metrics.update(
-                {f"timing_s/{name}": value for name, value in timings.items()}
-            )
-            diagnostic_metrics["perf/time_per_step"] = timings["step"]
-            total_tokens = diagnostic_metrics.get("training/total_tokens", 0.0)
-            diagnostic_metrics["perf/total_num_tokens"] = total_tokens
-            diagnostic_metrics["perf/tokens_per_second_per_device"] = total_tokens / max(
-                timings["step"] * dist.get_world_size(),
-                1.0e-9,
-            )
+            self._add_step_timing_metrics(diagnostic_metrics, timings)
         self._complete_step(
             step=next_step,
             batch=batch,
@@ -469,6 +479,34 @@ class SyncTrainer:
             actor_update=actor_update,
             critic_update=critic_update,
             diagnostic_metrics=diagnostic_metrics,
+        )
+
+    def _post_update_mismatch(self, experience: ExperienceBatch) -> dict[str, float]:
+        """Collect synchronized post-update policy consistency diagnostics."""
+        post_update_log_probs = self._run_rank_synchronized(
+            "post-update Actor log-probabilities",
+            lambda: self.actor.compute_log_probs(experience),
+        )
+        if post_update_log_probs is None:
+            raise RuntimeError(
+                "Post-update Actor log-probability computation failed without a synchronized error"
+            )
+        return measure_post_update_old_policy_mismatch(
+            experience,
+            post_update_log_probs,
+            group=self._dp_group_info.group,
+            group_size=self.parallel_dims.dp_size,
+        )
+
+    @staticmethod
+    def _add_step_timing_metrics(diagnostic_metrics: dict[str, float], timings: Mapping[str, float]) -> None:
+        """Record per-stage duration and per-device token throughput."""
+        diagnostic_metrics.update({f"timing_s/{name}": value for name, value in timings.items()})
+        diagnostic_metrics["perf/time_per_step"] = timings["step"]
+        total_tokens = diagnostic_metrics.get("training/total_tokens", 0.0)
+        diagnostic_metrics["perf/total_num_tokens"] = total_tokens
+        diagnostic_metrics["perf/tokens_per_second_per_device"] = total_tokens / max(
+            timings["step"] * dist.get_world_size(), 1.0e-9,
         )
 
     def _complete_step(
@@ -575,34 +613,7 @@ class SyncTrainer:
             else int(vllm_config["data_parallel_size"])
             * int(vllm_config["tensor_parallel_size"])
         )
-        for rank, rank_metadata in enumerate(metadata):
-            rank_local_world_size, _, _, rank_devices = rank_metadata
-            if int(rank_local_world_size) != world_size:
-                raise ValueError(
-                    "The shared vLLM rollout path is single-node only: "
-                    f"rank={rank}, world_size={world_size}, local_world_size={rank_local_world_size}"
-                )
-            device_ids = [device.strip() for device in rank_devices.split(",")]
-            if (
-                len(device_ids) != expected_devices
-                or not all(device_ids)
-                or len(set(device_ids)) != expected_devices
-            ):
-                raise ValueError(
-                    f"Shared {deployment} rollout requires its full unique physical NPU set on every rank: "
-                    f"rank={rank}, devices={rank_devices!r}, expected={expected_devices}"
-                )
-        endpoints = [(host, port) for _, host, port, _ in metadata]
-        if len(set(endpoints)) != 1:
-            raise ValueError(
-                f"Shared {deployment} rollout requires the same endpoint on every rank: endpoints={endpoints!r}"
-            )
-        device_mappings = [rank_devices for _, _, _, rank_devices in metadata]
-        if len(set(device_mappings)) != 1:
-            raise ValueError(
-                f"Shared {deployment} rollout requires the same full physical NPU set on every rank: "
-                f"mappings={device_mappings!r}"
-            )
+        _validate_shared_vllm_metadata(metadata, deployment, world_size, expected_devices)
 
     def _build_runtime(self) -> None:
         """Build tokenizer, data, requirement-selected roles, optimizers, and tracking."""
@@ -929,13 +940,13 @@ class SyncTrainer:
         if optimizer is None:
             return
         optimizers = getattr(optimizer, "chained_optimizers", (optimizer,))
-        device_states = [
-            str(tensor.device)
-            for component in optimizers
-            for state in component.state.values()
-            for tensor in _iter_state_tensors(state)
-            if not str(tensor.device).startswith("cpu")
-        ]
+        device_states = []
+        for component in optimizers:
+            for state in component.state.values():
+                for tensor in _iter_state_tensors(state):
+                    device = str(tensor.device)
+                    if not device.startswith("cpu"):
+                        device_states.append(device)
         if device_states:
             raise RuntimeError(
                 f"Colocated {role} optimizer state must be CPU resident, got devices={sorted(set(device_states))}"

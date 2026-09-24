@@ -13,6 +13,9 @@
 # limitations under the License.
 # ============================================================================
 """Distributed evaluation for the synchronous RL trainer."""
+
+__all__ = ["Evaluator"]
+
 import logging
 from typing import Any, Callable, Optional
 
@@ -214,4 +217,3 @@ class Evaluator:
             total,
         )
         return metrics, select_round_robin_samples(records, self.log_samples)
-__all__ = ["Evaluator"]

@@ -27,6 +27,7 @@ from rl.trainer import SyncTrainer
 
 _OPTIONAL_OVERRIDE_PATHS = frozenset(("rollout.vllm.visible_devices",))
 
+
 def _parse_override_value(raw_value: str) -> Any:
     """Parse a CLI override value with YAML scalar/list semantics."""
     return yaml.safe_load(raw_value)

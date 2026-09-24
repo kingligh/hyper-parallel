@@ -189,6 +189,7 @@ class ActorRolloutWeightSync:
             "sleep before training",
             lambda: client.sleep(level=1, mode="wait"),
         )
+
         def verify_sleeping() -> None:
             """Require every rank's connected replica to be sleeping."""
             if not client.is_sleeping():
@@ -254,6 +255,7 @@ class ActorRolloutWeightSync:
                 "post-publication cache reset",
                 client.pause,
             )
+
             def verify_post_publication_pause() -> None:
                 """Require admission to remain closed after publication."""
                 if not client.is_paused():

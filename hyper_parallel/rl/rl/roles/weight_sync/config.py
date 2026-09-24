@@ -14,6 +14,12 @@
 # ============================================================================
 """Canonical weight-sync configuration and supported topology boundaries."""
 
+__all__ = [
+    "WeightSyncConfig",
+    "resolve_weight_sync_config",
+    "validate_weight_sync_support",
+]
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -81,10 +87,3 @@ def resolve_weight_sync_config(
         strategy=strategy,
         bucket_size_bytes=bucket_size_mb * 2**20,
     )
-
-
-__all__ = [
-    "WeightSyncConfig",
-    "resolve_weight_sync_config",
-    "validate_weight_sync_support",
-]

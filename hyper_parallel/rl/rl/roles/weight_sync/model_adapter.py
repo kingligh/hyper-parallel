@@ -234,13 +234,8 @@ def _direct_tensor_description(
     }
 
 
-def _native_qwen3_qkv_descriptions(
-    name: str,
-    parameter: Any,
-    hf_config: Any,
-    tp_size: int,
-) -> list[dict[str, Any]]:
-    """Map native fused QKV storage to the three canonical Actor tensors."""
+def _native_qwen3_qkv_local_sizes(hf_config: Any, tp_size: int) -> tuple[int, int]:
+    """Validate native Qwen3 head partitioning and return local Q/KV widths."""
     num_heads = int(hf_config.num_attention_heads)
     num_kv_heads = int(hf_config.num_key_value_heads)
     hidden_size = int(hf_config.hidden_size)
@@ -266,6 +261,17 @@ def _native_qwen3_qkv_descriptions(
             f"Native Qwen3 KV heads {num_kv_heads} are not divisible by TP {tp_size}"
         )
     kv_local_size = kv_size // tp_size
+    return q_local_size, kv_local_size
+
+
+def _native_qwen3_qkv_descriptions(
+    name: str,
+    parameter: Any,
+    hf_config: Any,
+    tp_size: int,
+) -> list[dict[str, Any]]:
+    """Map native fused QKV storage to the three canonical Actor tensors."""
+    q_local_size, kv_local_size = _native_qwen3_qkv_local_sizes(hf_config, tp_size)
     tail_shape = tuple(int(size) for size in parameter.shape[1:])
     expected_shape = (q_local_size + 2 * kv_local_size,) + tail_shape
     if tuple(int(size) for size in parameter.shape) != expected_shape:
@@ -273,11 +279,13 @@ def _native_qwen3_qkv_descriptions(
             f"Native Qwen3 fused QKV parameter {name!r} has shape "
             f"{tuple(parameter.shape)}, expected {expected_shape}"
         )
-    source_suffixes = ("q_proj", "k_proj", "v_proj")
-    local_sizes = (q_local_size, kv_local_size, kv_local_size)
     descriptions = []
     destination_offset = 0
-    for source_suffix, local_size in zip(source_suffixes, local_sizes):
+    for source_suffix, local_size in (
+        ("q_proj", q_local_size),
+        ("k_proj", kv_local_size),
+        ("v_proj", kv_local_size),
+    ):
         source_name = name.replace("qkv_proj", source_suffix)
         local_shape = (local_size,) + tail_shape
         destination_starts = (destination_offset,) + (0,) * len(tail_shape)

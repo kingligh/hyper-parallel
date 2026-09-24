@@ -14,6 +14,14 @@
 # ============================================================================
 """Public cross-module contracts for the Hyper-RL runtime."""
 
+__all__ = [
+    "ExperienceBatch",
+    "Message",
+    "PromptRecord",
+    "Trajectory",
+    "Turn",
+]
+
 from importlib import import_module
 from typing import Any
 
@@ -42,6 +50,3 @@ def __getattr__(name: str) -> Any:  # pylint: disable=invalid-name
 def __dir__() -> list[str]:  # pylint: disable=invalid-name
     """Expose lazy public contracts to interactive callers."""
     return sorted((*globals(), *_EXPORTS))
-
-
-__all__ = list(_EXPORTS)

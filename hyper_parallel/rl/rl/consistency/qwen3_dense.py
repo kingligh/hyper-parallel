@@ -14,6 +14,20 @@
 # ============================================================================
 """Qwen3 Dense training-rollout numerical consistency profile."""
 
+__all__ = [
+    "CONSISTENCY_PROFILE_OFF",
+    "QWEN3_ASCEND_CONSISTENCY_V1",
+    "configure_consistency_profile",
+    "consistency_runtime_state",
+    "consistency_profile",
+    "install_rollout_consistency_profile",
+    "install_qwen3_rollout_rms_norm_diagnostic",
+    "install_trainer_consistency_profile",
+    "trainer_sequence_log_probs",
+    "validate_consistency_model_identity",
+    "validate_rollout_consistency_profile",
+]
+
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -512,18 +526,3 @@ def install_trainer_consistency_profile(config: Mapping[str, Any]) -> None:
     _install_batch_invariant_sum_compatibility()
     _install_qwen3_npu_rms_norm()
     _runtime.installed_profile = profile
-
-
-__all__ = [
-    "CONSISTENCY_PROFILE_OFF",
-    "QWEN3_ASCEND_CONSISTENCY_V1",
-    "configure_consistency_profile",
-    "consistency_runtime_state",
-    "consistency_profile",
-    "install_rollout_consistency_profile",
-    "install_qwen3_rollout_rms_norm_diagnostic",
-    "install_trainer_consistency_profile",
-    "trainer_sequence_log_probs",
-    "validate_consistency_model_identity",
-    "validate_rollout_consistency_profile",
-]

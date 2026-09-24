@@ -216,6 +216,7 @@ class HCCLWeightTransport:
     ) -> tuple[int, int]:
         """Pack and broadcast the original ordered buckets for one direct route."""
         buckets = plan.for_route(source_rank, tp_rank)
+
         def materialize(index: int) -> Any:
             """Only the route's source rank evaluates the producer callback."""
             return pack_direct_bucket(state_dict, buckets[index], self._groups[(source_rank, tp_rank)].device)

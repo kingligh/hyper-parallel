@@ -14,9 +14,10 @@
 # ============================================================================
 """Qwen3 dense adapters for the shared HyperAutoModel construction pipeline."""
 
+__all__ = ["get_adapter_spec"]
+
 from typing import Any
 
-__all__ = ["get_adapter_spec"]
 
 
 def get_adapter_spec() -> Any:

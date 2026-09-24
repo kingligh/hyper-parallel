@@ -13,6 +13,9 @@
 # limitations under the License.
 # ============================================================================
 """Critic model execution and algorithm-neutral value optimization."""
+
+__all__ = ["Critic"]
+
 from dataclasses import replace
 from functools import wraps
 from types import MethodType
@@ -290,4 +293,3 @@ class Critic(torch.nn.Module):  # pylint: disable=abstract-method
             self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
         return float(grad_norm.item())
-__all__ = ["Critic"]
