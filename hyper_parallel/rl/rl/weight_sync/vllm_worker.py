@@ -31,9 +31,9 @@ from rl.roles.model_setup import (
     NATIVE_QWEN3_ARCHITECTURE,
     NATIVE_QWEN3_MOE_ARCHITECTURE,
 )
-from rl.roles.weight_sync.model_adapter import rollout_tensor_descriptions
-from rl.roles.weight_sync.packed_weight import unpack_packed_weights
-from rl.roles.weight_sync.vllm_client import KEEP_SCHEDULER_PAUSED_TAG
+from rl.weight_sync.model_adapter import rollout_tensor_descriptions
+from rl.weight_sync.packed_weight import unpack_packed_weights
+from rl.weight_sync.vllm_client import KEEP_SCHEDULER_PAUSED_TAG
 
 _SUPPORTED_ARCHITECTURES = frozenset(
     (

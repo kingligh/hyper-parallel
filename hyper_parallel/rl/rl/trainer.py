@@ -57,7 +57,10 @@ from rl.dataset.data_source import (
     collate_prompt_samples,
 )
 from rl.evaluation import Evaluator
-from rl.process_cleanup import cleanup_processes
+from rl.utils.process_cleanup import cleanup_processes
+from rl.reward_model import RewardModelClient, load_reward_function, score_model_batch, scorer_fingerprint
+from rl.roles.rollout.topology import resolve_vllm_rollout_topology
+from rl.weight_sync.sync import coordinator_call
 from rl.roles.model_setup import (
     build_role_model,
     build_role_optimizer,
@@ -71,7 +74,7 @@ from rl.roles.rollout.worker import (
     DeepSeekRolloutManager,
     RolloutManager,
 )
-from rl.roles.weight_sync.sync import PolicySnapshot
+from rl.weight_sync.sync import PolicySnapshot
 from rl.utils.monitoring.metrics import (
     build_training_metrics,
     enforce_learning_gate,
@@ -196,6 +199,12 @@ class SyncTrainer:
     def _cleanup(self) -> None:
         """Close owned services and reset lifecycle state even when cleanup raises."""
         try:
+            reward_model = getattr(self, "reward_model_client", None)
+            if reward_model is not None:
+                try:
+                    reward_model.close()
+                except Exception as error:  # pylint: disable=broad-exception-caught
+                    logger.warning("Reward model cleanup failed: %s", error)
             cleanup_processes(
                 self._tracker,
                 getattr(self, "rollout_manager", None),
@@ -368,6 +377,8 @@ class SyncTrainer:
 
     def _publish_policy(self, next_step: int) -> None:
         """Transfer the updated Actor and restore rollout residency."""
+        if getattr(self, "reward_model_client", None) is not None and self.reward_model_client.state != "sleeping":
+            raise RuntimeError("Reward model must be sleeping before Actor publication")
         hsdp_sync_stream()
         self._reshard_model(self.actor.actor_model)
         self._release_training_state_for_rollout()
@@ -406,7 +417,13 @@ class SyncTrainer:
         )
         timings["gen"] = time.perf_counter() - stage_started
         stage_started = time.perf_counter()
-        self.rollout_engine.prepare_for_training()
+        if getattr(self, "reward_model_client", None) is None:
+            self.rollout_engine.prepare_for_training()
+        else:
+            rollout = self._score_model_rollout(prompt_records, rollout)
+            timings["reward"] = float(rollout.metadata["reward_seconds"])
+            timings["reward_wake"] = float(rollout.metadata["reward_wake_seconds"])
+            timings["reward_sleep"] = float(rollout.metadata["reward_sleep_seconds"])
         timings["prepare_training"] = time.perf_counter() - stage_started
         if rollout.old_log_probs is None:
             raise RuntimeError("Training rollout did not produce old_log_probs")
@@ -620,6 +637,7 @@ class SyncTrainer:
         self._build_tokenizer_and_data()
         self._build_models_and_optimizers()
         self._build_rollout_runtime()
+        self._build_reward_model_runtime()
         self.experience_preparer = ExperiencePreparer(self.algorithm, self._dp_group_info)
         checkpoint_config = required_mapping(
             required_mapping(self.resolved_config, "train"),
@@ -838,7 +856,10 @@ class SyncTrainer:
                     if agentic_config.get("max_episode_tokens") is None
                     else int(agentic_config["max_episode_tokens"])
                 ),
-                "environment_settings": dict(agentic_config),
+                "environment_settings": {
+                    **agentic_config,
+                    **({"defer_reward_model": True} if "reward_model" in self.resolved_config else {}),
+                },
                 "interaction_mode": agentic_config.get("interaction_mode"),
                 "eos_token_ids": eos_token_ids,
             })
@@ -899,7 +920,72 @@ class SyncTrainer:
                 data_parallel_rank=int(self.parallel_dims.dp_rank),
                 data_parallel_size=int(self.parallel_dims.dp_size),
                 is_request_owner=int(self.parallel_dims.tp_rank) == 0,
+                score_batch=(functools.partial(self._score_model_rollout, evaluation=True)
+                             if "reward_model" in self.resolved_config else None),
             )
+
+    def _build_reward_model_runtime(self) -> None:
+        """Create an idle colocated RM handle only for explicit model scoring."""
+        self.reward_model_client = None
+        reward_config = self.resolved_config.get("reward_model")
+        if reward_config is None:
+            return
+        self.reward_model_config = dict(reward_config)
+        self.reward_model_scorer = load_reward_function(reward_config["scorer"])
+        self.reward_model_scorer_id = scorer_fingerprint(reward_config)
+        rollout_config = required_mapping(required_mapping(self.resolved_config, "rollout"), "vllm")
+        devices = resolve_vllm_rollout_topology(rollout_config, os.environ).visible_devices
+        self.reward_model_client = RewardModelClient(
+            reward_config, devices, owner=dist.get_rank() == 0,
+        )
+
+    def _score_model_rollout(
+        self, prompts: Any, rollout: ExperienceBatch, *, evaluation: bool = False,
+    ) -> ExperienceBatch:
+        """Switch shared NPU residency, invoke the task scorer, and restore rollout for evaluation."""
+        client = self.reward_model_client
+        if client is None:
+            raise RuntimeError("Model reward scoring requires a configured RM")
+        started = time.perf_counter()
+        self.rollout_engine.prepare_for_training()
+        self._release_training_state_for_rollout()
+        wake_started = time.perf_counter()
+        state = coordinator_call("reward model wake", client.prepare)
+        client.state = state
+        wake_seconds = time.perf_counter() - wake_started
+        primary_error = None
+        try:
+            scored = score_model_batch(
+                prompts, rollout, scorer=self.reward_model_scorer, client=client,
+                scorer_id=self.reward_model_scorer_id,
+                tp_rank=int(self.parallel_dims.tp_rank), tp_size=int(self.parallel_dims.tp_size),
+                tp_group=(self.parallel_dims.device_mesh["tp"].get_group()
+                          if self.parallel_dims.tp_size > 1 else None),
+                max_concurrency=int(self.reward_model_config.get("max_concurrency", 16)),
+            )
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            try:
+                sleep_started = time.perf_counter()
+                state = coordinator_call("reward model sleep", client.sleep)
+                client.state = state
+                sleep_seconds = time.perf_counter() - sleep_started
+            except Exception:
+                if primary_error is None:
+                    raise
+                logger.exception("RM sleep failed while handling the original scoring error")
+        if client.state != "sleeping":
+            raise RuntimeError("Reward model must sleep before training continues")
+        scored.metadata.update({
+            "reward_seconds": time.perf_counter() - started,
+            "reward_wake_seconds": wake_seconds,
+            "reward_sleep_seconds": sleep_seconds,
+        })
+        if evaluation:
+            self.rollout_engine.prepare_for_rollout()
+        return scored
 
     def _build_tracker(self) -> None:
         """Initialize console/W&B tracking on global rank zero only."""

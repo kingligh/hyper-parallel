@@ -19,7 +19,6 @@ import unittest
 import torch
 
 from rl.algorithm.advantage import GAEAdvantageEstimator, GroupRelativeAdvantageEstimator
-from rl.algorithm.reward import compute_rule_reward, extract_answer, get_reward
 
 
 class TestAdvantageBoundaries(unittest.TestCase):
@@ -63,11 +62,3 @@ class TestAdvantageBoundaries(unittest.TestCase):
         )
         torch.testing.assert_close(result.advantages, torch.tensor([[0.0, 0.0], [0.0, 2.0]]))
         torch.testing.assert_close(result.returns, torch.tensor([[0.0, 0.0], [0.0, 3.0]]))
-
-    def test_strict_reward_uses_final_answer_and_bounded_tail(self) -> None:
-        """Reward extraction rejects absent/tail-expired answers and preserves exact matching."""
-        self.assertEqual(extract_answer("#### 1\ncorrection: #### -1,234.5"), "-1234.5")
-        self.assertIsNone(extract_answer("#### 2" + "x" * 300))
-        self.assertIsNone(extract_answer("The answer is 2"))
-        self.assertEqual(compute_rule_reward(["#### 2", "#### 2.0", "missing"], "2"), [1.0, 0.0, 0.0])
-        self.assertEqual(get_reward("gsm8k")("#### 1,234", "$1,234"), 1.0)

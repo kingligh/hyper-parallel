@@ -317,6 +317,8 @@ printf 'Qwen3 TP smoke: deployment=%s implementation=%s trainer_tp=%s rollout_tp
 container_name="hyper-qwen3-${implementation}-trainer-tp${trainer_tp}-rollout-tp${rollout_tp}-$$"
 docker run --rm --name "${container_name}" --privileged --shm-size="${shm_size}" --network=host \
     -e "ASCEND_RT_VISIBLE_DEVICES=${all_visible}" \
+    -e "HYPER_RESULT_UID=$(id -u)" \
+    -e "HYPER_RESULT_GID=$(id -g)" \
     -e HYPER_PARALLEL_PLATFORM=torch \
     -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
     -e VLLM_HOST_IP=127.0.0.1 \
@@ -357,6 +359,7 @@ docker run --rm --name "${container_name}" --privileged --shm-size="${shm_size}"
     -w /workspace/hyper-parallel \
     "${image}" /bin/bash -lc '
         set -euo pipefail
+        trap "chown -R ${HYPER_RESULT_UID}:${HYPER_RESULT_GID} /results" EXIT
         unset VLLM_PLUGINS
         export PYTHONPATH=/workspace/hyper-parallel/hyper_parallel/rl:/workspace/hyper-parallel:${PYTHONPATH:-}
         bash /workspace/hyper-parallel/hyper_parallel/rl/docker/install_runtime.sh

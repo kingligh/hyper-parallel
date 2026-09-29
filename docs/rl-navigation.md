@@ -23,12 +23,14 @@ UT 包含 CPU 计算与 mock；真实模型、通信和数值效果需执行对�
 | 功能 | 配置或入口 | 实现分支 | 数据或指标 | 代表测试 |
 | --- | --- | --- | --- | --- |
 | GRPO | `algorithm.name=grpo` | `rl/algorithm/loss.py::GRPOAlgorithm.build_targets`、`rl/algorithm/loss.py::GRPOAlgorithm.compute_actor_loss` | 分组优势；`train/policy_loss`、`train/kl_loss` | `tests/ut/rl/algorithm/test_algorithm_registry.py`、`tests/ut/rl/algorithm/test_algorithm_loss.py` |
+| 共卡 RM | 可选 `reward_model.scorer`、`model_path`、`scoring`、TP/DP；内部 Qwen3 Dense | `rl/reward_model/client.py::RewardModelClient`、`rl/reward_model/scoring.py::score_model_batch`、`examples/gsm8k/agent.py::score_gsm8k_environment_reward`、`rl/trainer.py::SyncTrainer._score_model_rollout` | 生成后评分；`reward/scored_sequences`、`reward/request_count`；无正确率时不输出 accuracy | `tests/ut/rl/reward_model/test_model_reward.py`；NPU case `reward-model-*` 待运行 |
+| GSPO | `algorithm.name=gspo`、`algorithm.loss_aggregation=seq-mean-token-mean`；Qwen3 dense 配方 | `rl/algorithm/loss.py::GSPOAlgorithm.compute_actor_loss`、`rl/roles/policy/actor.py::Actor.update` | 分组优势；等权序列平均；`train/valid_sequences`、`train/sequence_clip_fraction` | `tests/ut/rl/algorithm/test_gspo.py`；真实 NPU case `gspo-*` 待运行 |
 | PPO | `algorithm.name=ppo`、`algorithm.gamma`、`algorithm.gae_lambda` | `rl/algorithm/loss.py::PPOAlgorithm.build_targets`、`rl/algorithm/loss.py::PPOAlgorithm.compute_actor_loss`、`rl/algorithm/loss.py::PPOAlgorithm.compute_critic_loss` | advantages、returns；`critic/value_loss` | `tests/ut/rl/algorithm/test_algorithm_loss.py`、`tests/ut/rl/trainer/test_ppo_targets.py` |
 | 分组优势与 GAE | 由算法选择 estimator | `rl/algorithm/advantage.py::GroupRelativeAdvantageEstimator.estimate`、`rl/algorithm/advantage.py::GAEAdvantageEstimator.estimate` | `TargetOutput` | `tests/ut/rl/algorithm/test_algorithm_advantage.py` |
 | PPO bootstrap 与优势归一化 | rollout 终止状态、Critic 最后一个 token 的值 | `rl/dataset/batch_builder.py::get_bootstrap_values`、`rl/dataset/batch_builder.py::ExperiencePreparer.prepare` | 冻结的旧 values、bootstrap、returns、loss mask | `tests/ut/rl/trainer/test_ppo_targets.py::TestPPOTargets.test_gae_bootstrap_and_observation_gap`、`tests/ut/rl/data/test_experience_preparer.py` |
 | Actor 重算 | 日志诊断或 `consistency.enabled=true` | `rl/trainer.py::SyncTrainer._prepare_experience`、`rl/roles/policy/actor.py::Actor.compute_log_probs` | Actor logprobs 用于诊断；训练 old_log_probs 保持 rollout 来源 | `tests/ut/rl/policy/test_policy_compute.py`、`tests/ut/rl/consistency/test_consistency.py` |
 | Actor 更新 | `train.micro_batch_size`、`train.response_mini_batch_size`、`train.policy_update_epochs` | `rl/roles/policy/actor.py::Actor.update`、`rl/roles/policy/actor.py::Actor.forward_backward` | `ActorUpdateMetrics`；`train/gradient_norm`、`train/optimizer_steps` | `tests/ut/rl/policy/test_policy_update.py` |
-| Reference | 内置 GRPO/PPO 的角色需求；`algorithm.kl_coef=0` 不移除 Reference | `rl/trainer.py::SyncTrainer._build_models_and_optimizers`、`rl/roles/policy/actor.py::Actor.__init__` | 冻结模型；`ExperienceBatch.reference_log_probs` | `tests/ut/rl/policy/test_actor_roles.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py` |
+| Reference | GRPO/PPO/GSPO 均按 `algorithm.kl_coef > 0` 请求 Reference；GSPO 默认零 KL | `rl/trainer.py::SyncTrainer._build_models_and_optimizers`、`rl/roles/policy/actor.py::Actor.__init__` | 冻结模型；`ExperienceBatch.reference_log_probs` | `tests/ut/rl/policy/test_actor_roles.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py` |
 | PPO Critic | `train.critic.weights_path`、`optimizer`、`micro_batch_size`、`response_mini_batch_size`、`update_epochs` | `rl/roles/policy/critic.py::build_value_model`、`rl/roles/policy/critic.py::Critic.compute_values`、`rl/roles/policy/critic.py::Critic.update` | 价值头已接入；`CriticUpdateMetrics`、`critic/value_loss`、`critic/optimizer_steps` | `tests/ut/rl/trainer/test_ppo_value_model.py`、`tests/ut/rl/policy/test_policy_update.py` |
 
 ## 3. Rollout 与 Agentic
@@ -54,12 +56,12 @@ UT 包含 CPU 计算与 mock；真实模型、通信和数值效果需执行对�
 
 | 功能 | 配置或入口 | 实现分支 | 数据或指标 | 代表测试 |
 | --- | --- | --- | --- | --- |
-| 策略选择 | `rollout.vllm.weight_sync.strategy`、`bucket_size_mb` | `rl/roles/weight_sync/config.py::resolve_weight_sync_config`、`rl/roles/weight_sync/transfer.py::build_weight_transfer` | 默认 full_gather；`weight_sync/configured_full_gather`、`weight_sync/configured_direct_reshard` | `tests/ut/rl/weight_sync/test_weight_sync_strategy.py` |
-| 完整参数 full-gather | `strategy=full_gather` | `rl/roles/weight_sync/transfer.py::FullGatherStrategy`、`rl/roles/weight_sync/packed_weight.py::build_packed_weight_buckets` | 整参数逐桶物化；桶大小不是大参数的绝对内存上限 | `tests/ut/rl/weight_sync/test_packed_weight.py`、`tests/ut/rl/weight_sync/test_weight_sync_transport.py` |
-| Direct reshard | `strategy=direct_reshard` | `rl/roles/weight_sync/transfer.py::DirectReshardStrategy`、`rl/roles/weight_sync/layout.py` | 源/目标布局、交集与传输计划 | `tests/ut/rl/weight_sync/test_direct_reshard.py`、`tests/ut/rl/weight_sync/test_weight_sync_transport.py` |
-| 设备传输 | `deployment=colocated` 或 `disjoint` | `rl/roles/weight_sync/ipc.py`、`rl/roles/weight_sync/hccl.py` | colocated→IPC；disjoint→HCCL | `tests/ut/rl/weight_sync/test_weight_sync_transport.py`、`tests/ut/rl/weight_sync/test_weight_sync_worker.py` |
-| MoE 专家映射与发布 | MoE 的 `full_gather` / `direct_reshard`，仅 colocated IPC | `rl/roles/weight_sync/model_adapter.py`、`rl/roles/weight_sync/layout.py`、`rl/roles/weight_sync/vllm_worker.py` | GroupedExperts 切分、EP/EDP 布局与目标专家映射；DP worker 版本确认；两种策略独立验收 | `tests/ut/rl/weight_sync/test_moe_weight_sync.py`；[M1 验收记录](../hyper_parallel/rl/docs/moe_code_agent.md#功能与支持边界) |
-| 版本提交与失败 | `PolicySnapshot` | `rl/trainer.py::SyncTrainer._publish_policy`、`rl/roles/weight_sync/transfer.py::WeightPublisher.publish`、`rl/roles/weight_sync/sync.py::ActorRolloutWeightSync.prepare_for_rollout` | 核对提交版本；`policy/version`；异常向上传播，无自动 fallback | `tests/ut/rl/weight_sync/test_weight_sync_transaction.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py::test_trainer_publication_releases_training_state_before_rollout_wake` |
+| 策略选择 | `rollout.vllm.weight_sync.strategy`、`bucket_size_mb` | `rl/weight_sync/config.py::resolve_weight_sync_config`、`rl/weight_sync/transfer.py::build_weight_transfer` | 默认 full_gather；`weight_sync/configured_full_gather`、`weight_sync/configured_direct_reshard` | `tests/ut/rl/weight_sync/test_weight_sync_strategy.py` |
+| 完整参数 full-gather | `strategy=full_gather` | `rl/weight_sync/transfer.py::FullGatherStrategy`、`rl/weight_sync/packed_weight.py::build_packed_weight_buckets` | 整参数逐桶物化；桶大小不是大参数的绝对内存上限 | `tests/ut/rl/weight_sync/test_packed_weight.py`、`tests/ut/rl/weight_sync/test_weight_sync_transport.py` |
+| Direct reshard | `strategy=direct_reshard` | `rl/weight_sync/layout.py::resolve_source_layouts`、`rl/weight_sync/layout.py::resolve_destination_layouts`、`rl/weight_sync/transfer.py::DirectReshardStrategy.build_direct_reshard_plan`、`rl/weight_sync/packed_weight.py::pack_direct_bucket` | 源/目标布局、交集计划、片段分桶与缓冲区填充 | `tests/ut/rl/weight_sync/test_direct_reshard.py`、`tests/ut/rl/weight_sync/test_weight_sync_transport.py` |
+| 设备传输 | `deployment=colocated` 或 `disjoint` | `rl/weight_sync/ipc.py`、`rl/weight_sync/hccl.py` | colocated→IPC；disjoint→HCCL | `tests/ut/rl/weight_sync/test_weight_sync_transport.py`、`tests/ut/rl/weight_sync/test_weight_sync_worker.py` |
+| MoE 专家映射与发布 | MoE 的 `full_gather` / `direct_reshard`，仅 colocated IPC | `rl/weight_sync/model_adapter.py`、`rl/weight_sync/layout.py`、`rl/weight_sync/vllm_worker.py` | GroupedExperts 切分、EP/EDP 布局与目标专家映射；DP worker 版本确认；两种策略独立验收 | `tests/ut/rl/weight_sync/test_moe_weight_sync.py`；[M1 验收记录](../hyper_parallel/rl/docs/moe_code_agent.md#功能与支持边界) |
+| 版本提交与失败 | `PolicySnapshot` | `rl/trainer.py::SyncTrainer._publish_policy`、`rl/weight_sync/transfer.py::WeightPublisher.publish`、`rl/weight_sync/sync.py::ActorRolloutWeightSync.prepare_for_rollout` | 核对提交版本；`policy/version`；异常向上传播，无自动 fallback | `tests/ut/rl/weight_sync/test_weight_sync_transaction.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py::test_trainer_publication_releases_training_state_before_rollout_wake` |
 
 ## 5. 一致性门禁
 
@@ -74,7 +76,7 @@ UT 包含 CPU 计算与 mock；真实模型、通信和数值效果需执行对�
 | 功能 | 配置或入口 | 实现分支 | 数据或指标 | 代表测试 |
 | --- | --- | --- | --- | --- |
 | 同步主循环 | `train.max_steps` | `rl/trainer.py::SyncTrainer.train`、`rl/trainer.py::SyncTrainer._train_step` | `RLTrainerState`；`train/global_step` | `tests/ut/rl/trainer/test_trainer_orchestration.py` |
-| 退出与初始化失败清理 | Trainer 初始化失败或训练退出 | `rl/process_cleanup.py::cleanup_processes`、`rl/process_cleanup.py::destroy_process_group` | 服务关闭、生命周期状态复位、进程组与缓存释放 | `tests/ut/rl/trainer/test_process_cleanup.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py` |
+| 退出与初始化失败清理 | Trainer 初始化失败或训练退出 | `rl/utils/process_cleanup.py::cleanup_processes`、`rl/utils/process_cleanup.py::destroy_process_group` | 服务关闭、生命周期状态复位、进程组与缓存释放 | `tests/ut/rl/trainer/test_process_cleanup.py`、`tests/ut/rl/trainer/test_trainer_orchestration.py` |
 | Parquet prompt 数据 | `data.train_path`、`data.test_path` | `rl/dataset/data_source.py::PromptDataset`、`rl/dataset/data_source.py::build_prompt_records` | `PromptRecord` 与批次 | `tests/ut/rl/data/test_data_source.py` |
 | 结构化任务数据 | `data.row_adapter=module:function`；与列名/指令覆盖互斥 | `rl/dataset/data_source.py::PromptDataset._adapt_sample`、`examples/code/prepare_data.py::adapt_row` | 原始 messages、稳定 ID、metadata、结构化 ground truth；超长消息报错 | `tests/ut/rl/data/test_code_data.py` |
 | 经验与目标 | rollout 结果、Reference、可选 Critic | `rl/dataset/batch_builder.py::build_experience_batch`、`rl/dataset/batch_builder.py::ExperiencePreparer.prepare` | `ExperienceBatch` 的 mask、old_log_probs、advantages、returns | `tests/ut/rl/data/test_contracts.py`、`tests/ut/rl/data/test_experience_preparer.py` |
@@ -98,6 +100,8 @@ UT 包含 CPU 计算与 mock；真实模型、通信和数值效果需执行对�
 | 程序 Agent | `codex-agent`、`deepseek-agent` | 外部程序轨迹与训练衔接 |
 | 保存恢复 | `checkpoint-resume` | 分阶段保存、恢复与继续训练 |
 | PPO | `ppo-tp1-full` | Actor/Critic 更新 |
+| Dense GSPO | `gspo-tp1-full`、`gspo-tp2-consistency-full`、`gspo-checkpoint-resume` | 序列归一化、训推一致性与恢复；真实 NPU 待运行 |
+| 共卡 RM | `reward-model-tp1`、`reward-model-tp2`、`reward-model-resume` | 服务切换、模型打分、发布与恢复；真实 NPU 待运行 |
 
 真实 RL ST 保留在 RL 子项目中，暂不由主项目 `tests/torch/` 门禁收集；需显式执行并准备模型、数据、镜像和设备。
 运行条件见 [ST 说明](../hyper_parallel/rl/README.md#系统测试)，PPO 验证边界见

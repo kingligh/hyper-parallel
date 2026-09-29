@@ -17,7 +17,7 @@
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
-from rl.roles.weight_sync import PolicySnapshot
+from rl.weight_sync import PolicySnapshot
 
 
 @dataclass(frozen=True)

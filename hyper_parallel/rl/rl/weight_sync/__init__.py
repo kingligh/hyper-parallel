@@ -12,22 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Rollout worker and registered generation-engine adapters."""
-from rl.roles.rollout.base import (
-    GenerationEngine,
-    GenerationRequest,
-    GenerationResult,
-    GenerationSettings,
+"""Public policy publication interfaces used by rollout roles."""
+from rl.weight_sync.sync import (
+    ActorRolloutWeightSync,
+    PolicySnapshot,
+    synchronized_call,
+    synchronize_error,
 )
-from rl.roles.rollout import vllm as _vllm  # noqa: F401
-from rl.roles.rollout.registry import ROLLOUT_ENGINES, build_rollout_engine
-from rl.weight_sync import PolicySnapshot
+from rl.weight_sync.transfer import (
+    WeightPublisher,
+    build_weight_transfer,
+)
+from rl.weight_sync.vllm_client import VLLMWeightSyncClientMixin
+
 __all__ = [
-    "GenerationEngine",
-    "GenerationRequest",
-    "GenerationResult",
-    "GenerationSettings",
+    "ActorRolloutWeightSync",
     "PolicySnapshot",
-    "ROLLOUT_ENGINES",
-    "build_rollout_engine",
+    "VLLMWeightSyncClientMixin",
+    "WeightPublisher",
+    "build_weight_transfer",
+    "synchronized_call",
+    "synchronize_error",
 ]

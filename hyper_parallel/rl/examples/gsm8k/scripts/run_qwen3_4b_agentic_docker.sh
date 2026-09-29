@@ -123,6 +123,8 @@ result_root=$(cd -- "${HYPER_VLLM_RESULT_ROOT}" && pwd)
 
 docker run --rm --privileged --shm-size=64g --network=host \
     -e "ASCEND_RT_VISIBLE_DEVICES=${HYPER_VLLM_VISIBLE_DEVICES}" \
+    -e "HYPER_RESULT_UID=$(id -u)" \
+    -e "HYPER_RESULT_GID=$(id -g)" \
     -e HYPER_PARALLEL_PLATFORM=torch \
     -e VLLM_WORKER_MULTIPROC_METHOD=spawn \
     -e VLLM_HOST_IP=127.0.0.1 \
@@ -148,6 +150,7 @@ docker run --rm --privileged --shm-size=64g --network=host \
     -w /workspace/hyper-parallel \
     "${runtime_image}" /bin/bash -lc '
         set -euo pipefail
+        trap "chown -R ${HYPER_RESULT_UID}:${HYPER_RESULT_GID} /results" EXIT
         if [[ "${HYPER_RUN_TASK}" == *_codex ]]; then
             codex --version | grep -Eq "(^|[[:space:]])0[.]152[.]1($|[[:space:]])"
         fi

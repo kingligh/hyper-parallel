@@ -245,6 +245,8 @@ class ExperiencePreparer:
         bootstrap_values: Optional[Any] = None,
     ) -> ExperienceBatch:
         """Validate role outputs and build algorithm-specific training targets."""
+        if rollout.metadata.get("reward_status") == "pending":
+            raise ValueError("Pending model rewards cannot be used for training targets")
         _validate_trajectory_rows(rollout.trajectories)
         episode_level = _uses_episode_targets(self.algorithm, rollout, values, bootstrap_values)
         requirements = self.algorithm.requirements.data

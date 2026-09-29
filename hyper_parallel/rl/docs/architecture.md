@@ -34,7 +34,7 @@ Agentic 的内部 runner 保留环境循环；Codex 与 DeepSeek Harness 使用�
    FSDP/TP、optimizer、gradient clipping 与 checkpoint 复用 master 公共能力。
 3. Rollout registry 构造一个 backend-neutral `GenerationEngine`，当前实现为共享 vLLM deployment。
 
-Trainer 初始化失败或训练退出时调用 `rl/process_cleanup.py::cleanup_processes`，依次关闭 tracker、
+Trainer 初始化失败或训练退出时调用 `rl/utils/process_cleanup.py::cleanup_processes`，依次关闭 tracker、
 rollout manager 和 rollout engine，再调用同文件的 `destroy_process_group` 销毁默认进程组，清理
 mesh、layout、FSDP、P2P 和 redistribution 缓存。P2P 缓存使用 native-core 所在位置，
 销毁失败时仍清理缓存；底层函数抛出的 RuntimeError/ValueError 由总清理入口记录为告警。
@@ -47,8 +47,11 @@ mesh、layout、FSDP、P2P 和 redistribution 缓存。P2P 缓存使用 native-c
 - 如何构建 advantage/return；
 - 如何计算 Actor/Critic loss。
 
-GRPO 和 PPO 共用 SyncTrainer。PPO 创建独立 Critic，固定 old values / returns 后更新两种角色，
+GRPO、PPO 和 GSPO 共用 SyncTrainer。GSPO 在 Qwen3 dense 路径上使用分组优势、序列级重要性比率和等权序列损失；默认零 KL，不创建 Reference 或 Critic。
+三种算法只在 `kl_coef > 0` 时请求 Reference；PPO 仍创建独立 Critic，固定 old values / returns 后更新两种角色，
 仅发布 Actor 权重。PPO 的配置、数据语义和实际验收范围见 [PPO](ppo.md)。
+
+可选共卡 RM 由 `rl/reward_model/` 持有冻结 vLLM 服务；业务评分函数位于 `examples/`。Trainer 仅在内部 Qwen3 Dense 的模型模式下安排 `rollout sleep → RM wake/score/sleep → Actor update`，并在评估、保存恢复和退出时核对服务状态。默认规则环境直接评分，不创建 RM。接口及验收边界见[共卡 RM 合同](reward_model_migration_plan.md)。
 
 ### master 模型接入
 
@@ -212,7 +215,7 @@ Disjoint 不需要 training residency 切换，但 publication 期间仍会关�
 
 两种策略共用 Qwen3 dense 的 canonical adapter、DP/TP 布局与事务校验。专家参数布局和 MoE 专用发布分支已移除；Qwen3 的 colocated、disjoint 与适用的 Bit-Exact 路径保留。
 
-共享 Qwen3 的融合 QKV 权重由 RL 的 `roles/weight_sync/model_adapter.py` 描述为标准 HF 权重的行区间。
+共享 Qwen3 的融合 QKV 权重由 RL 的 `weight_sync/model_adapter.py` 描述为标准 HF 权重的行区间。
 full-gather 按物理融合参数合桶，接收方按元数据还原 Q/K/V 后调用 vLLM `load_weights()`；
 不会额外 gather 三次 QKV。direct-reshard 在本地 FSDP/TP 分片与这些行区间之间求交，
 继续使用现有的 fragment 限额、IPC/HCCL 路由和事务提交机制。未融合参数保持原有协议。
@@ -259,7 +262,7 @@ Resume 后，如果 Trainer step 高于 rollout 初始版本，Trainer 会在第
 | 下游 rollout backend 适配 | `RolloutEngineRegistry` + `GenerationEngine` | 返回 authoritative tokens、mask、logprobs 和 policy version |
 | 新环境 | `agentic.module_path` + Environment | 最终输出 `Trajectory` |
 | 程序化 Agent | AgentProgram / ProgramAgentRunner | 内置 Harness 已接入；新增 runner 需适配，边界见 [Agentic RL](agentic_rl.md) |
-| 新 reward | 环境 reward 或 reward registry | reward 与 trajectory/group identity 对齐 |
+| 新 reward | 在任务环境或 `examples/` 的 Agent 中计算 | reward 与 trajectory/group identity 对齐 |
 | 新模型 | `ModelRegistration`、HyperAutoModel 与 rollout adapter | 训练/推理参数语义和 weight layout 必须可映射 |
 
 注册成功只代表组件可构造，不代表具备端到端支持。新能力还需要 shipped recipe、代表测试和对应运行门禁。

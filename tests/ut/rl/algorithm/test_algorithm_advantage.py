@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""CPU unit tests for Hyper-RL advantage estimators and rule rewards."""
+"""CPU unit tests for Hyper-RL advantage estimators."""
 # Hyper-RL CPU tests intentionally exercise the verified Torch runtime.
 # pylint: disable=forbidden-backend-import
 
 import math
 
-import pytest
 import torch
 
-from rl.algorithm import compute_rule_reward, extract_answer
 from rl.algorithm.advantage import GAEAdvantageEstimator, GroupRelativeAdvantageEstimator
 
 
@@ -80,23 +78,3 @@ def test_gae_and_returns_match_manual_backward_recursion() -> None:
     expected_returns = torch.tensor([[1.62, 0.0, 2.0]])
     torch.testing.assert_close(output.advantages, expected_advantages)
     torch.testing.assert_close(output.returns, expected_returns)
-
-
-@pytest.mark.parametrize(
-    ("solution", "ground_truth", "expected_answer"),
-    [
-        ("work\n#### 42", "42", "42"),
-        ("work\n#### -12", "-12", "-12"),
-        ("first #### 1\nfinal #### 3.14", "3.14", "3.14"),
-        ("work\n#### 1,024", "1,024", "1024"),
-    ],
-)
-def test_rule_reward_extracts_supported_numeric_answers(
-    solution: str,
-    ground_truth: str,
-    expected_answer: str,
-) -> None:
-    """Supported numeric formats extract and score in scalar and list form."""
-    assert extract_answer(solution) == expected_answer
-    assert compute_rule_reward(solution, ground_truth) == 1.0
-    assert compute_rule_reward([solution, "#### 0"], ground_truth) == [1.0, 0.0]

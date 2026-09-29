@@ -51,8 +51,6 @@ _EXPORTS = {
     "Transition": ("rl.agentic.core.types", "Transition"),
     "TurnContext": ("rl.agentic.core.types", "TurnContext"),
     "TurnResult": ("rl.agentic.core.types", "TurnResult"),
-    "compute_rule_reward": ("rl.algorithm.reward", "compute_rule_reward"),
-    "extract_answer": ("rl.algorithm.reward", "extract_answer"),
     "load_agentic_module": ("rl.agentic.envs.environment", "load_agentic_module"),
 }
 

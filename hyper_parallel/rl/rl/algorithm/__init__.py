@@ -25,6 +25,8 @@ from rl.algorithm.loss import (
     DataRequirements,
     GRPOAlgorithm,
     GRPOConfig,
+    GSPOAlgorithm,
+    GSPOConfig,
     LossOutput,
     PPOAlgorithm,
     PPOConfig,
@@ -35,13 +37,6 @@ from rl.algorithm.loss import (
     register_algorithm,
     register_policy_loss,
 )
-from rl.algorithm.reward import (
-    RewardFunction,
-    compute_rule_reward,
-    extract_answer,
-    get_reward,
-    register_reward,
-)
 
 
 __all__ = [
@@ -50,21 +45,18 @@ __all__ = [
     "DataRequirements",
     "GRPOAlgorithm",
     "GRPOConfig",
+    "GSPOAlgorithm",
+    "GSPOConfig",
     "LossOutput",
     "PPOAlgorithm",
     "PPOConfig",
     "RLAlgorithm",
-    "RewardFunction",
     "RoleRequirements",
     "TargetOutput",
     "build_algorithm",
-    "compute_rule_reward",
-    "extract_answer",
     "get_advantage_estimator",
     "get_policy_loss",
-    "get_reward",
     "register_advantage_estimator",
     "register_algorithm",
     "register_policy_loss",
-    "register_reward",
 ]

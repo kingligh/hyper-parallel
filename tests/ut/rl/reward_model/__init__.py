@@ -12,25 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Public policy publication interfaces used by rollout roles."""
-from rl.roles.weight_sync.sync import (
-    ActorRolloutWeightSync,
-    PolicySnapshot,
-    synchronized_call,
-    synchronize_error,
-)
-from rl.roles.weight_sync.transfer import (
-    WeightPublisher,
-    build_weight_transfer,
-)
-from rl.roles.weight_sync.vllm_client import VLLMWeightSyncClientMixin
-
-__all__ = [
-    "ActorRolloutWeightSync",
-    "PolicySnapshot",
-    "VLLMWeightSyncClientMixin",
-    "WeightPublisher",
-    "build_weight_transfer",
-    "synchronized_call",
-    "synchronize_error",
-]
+"""Reward model contracts for the Hyper-RL CPU unit suite."""

@@ -24,7 +24,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-import rl.process_cleanup as cleanup_module
+import rl.utils.process_cleanup as cleanup_module
 import rl.trainer as trainer_module
 import rl.utils.monitoring.metrics as metrics_module
 from rl.algorithm import build_algorithm

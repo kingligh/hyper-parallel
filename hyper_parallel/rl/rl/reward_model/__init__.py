@@ -12,22 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Rollout worker and registered generation-engine adapters."""
-from rl.roles.rollout.base import (
-    GenerationEngine,
-    GenerationRequest,
-    GenerationResult,
-    GenerationSettings,
-)
-from rl.roles.rollout import vllm as _vllm  # noqa: F401
-from rl.roles.rollout.registry import ROLLOUT_ENGINES, build_rollout_engine
-from rl.weight_sync import PolicySnapshot
-__all__ = [
-    "GenerationEngine",
-    "GenerationRequest",
-    "GenerationResult",
-    "GenerationSettings",
-    "PolicySnapshot",
-    "ROLLOUT_ENGINES",
-    "build_rollout_engine",
-]
+"""Optional model scoring service; task reward functions live in examples."""
+
+from rl.reward_model.client import RewardModelClient
+from rl.reward_model.scoring import load_reward_function, score_model_batch, scorer_fingerprint
+
+__all__ = ["RewardModelClient", "load_reward_function", "score_model_batch", "scorer_fingerprint"]
