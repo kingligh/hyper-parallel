@@ -65,7 +65,7 @@ python -m examples.code.prepare_data \
 使用 `swr.cn-east-3.myhuaweicloud.com/huawei-hyper-rl/sandboxfusion-python:v1-arm64`。
 先按[镜像下载与校验](../../docker/README.md#单轮-code-的-sandboxfusion-镜像)拉取并核对镜像身份；
 镜像公开可读，无需登录，已有训练基础层由 Docker 自动复用。
-训练镜像是 `swr.cn-east-3.myhuaweicloud.com/huawei-hyper-rl/hyper-rl:v0.22.1rc1-unified-arm64`，两者分开运行。
+训练镜像是 `hyper-parallel/hyper-rl:v0.22.1rc1-unified-arm64`，两者分开运行。
 沙箱不挂载训练源码、权重、数据或 Docker socket。
 
 下面是当前 Docker 18 / cgroup v1 环境验证过的启动方式。Docker 18 没有 `--cgroupns`，

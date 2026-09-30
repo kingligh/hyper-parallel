@@ -25,8 +25,8 @@ from typing import Any, Optional
 import pytest
 import torch
 
-import rl.roles.weight_sync.vllm_worker as worker_module
-from rl.roles.weight_sync.vllm_worker import (
+import rl.weight_sync.vllm_worker as worker_module
+from rl.weight_sync.vllm_worker import (
     get_direct_reshard_layout,
     get_policy_version,
     init_direct_reshard_group,

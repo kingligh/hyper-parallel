@@ -196,7 +196,7 @@ Codex 和 DeepSeek 除各自子配置外，还必须满足以下共享约束：
 | 配置与 runner 约束 | `rl/config.py` |
 | 唯一训练编排入口 | `rl/trainer.py` |
 | 三种 rollout manager | `rl/roles/rollout/worker.py` |
-| Internal episode 循环 | `rl/agentic/core/runner.py`、`session.py` |
+| Internal episode 循环 | `rl/agentic/core/trajectory_runner.py`、`session.py` |
 | 外部 program 数据面 | `rl/agentic/core/program_runner.py` |
 | 环境与工具组合 | `rl/agentic/envs/environment.py`、`rl/agentic/tools/` |
 | Codex 适配 | `rl/agentic/codex/` |

@@ -818,3 +818,51 @@ def _validate_harness_tokens(label, token_ids, action_mask, token_logprobs, max_
     for index, selected in enumerate(action_mask[1:]):
         if selected and token_logprobs[index + 1] is None:
             raise ValueError(f"{label} trainable token is missing its sampled logprob")
+
+
+def audit_training_rows(trajectories: tuple) -> dict:
+    """Fail closed if a training row differs from its actual sampled context/action."""
+    prompts, actions = [], []
+    for row in trajectories:
+        response = row.metadata["gateway_record"]["response"]
+        choice = response["choices"][0]
+        prompt = choice.get("input_token_ids", choice.get("prompt_token_ids", response.get("prompt_token_ids")))
+        content = choice["logprobs"]["content"]
+        action = choice.get("token_ids", response.get("token_ids"))
+        if action is None:
+            action = [item["token_id"] for item in content]
+        if prompt is None or not action:
+            raise ValueError("Missing real prompt/action token IDs")
+        prompt, action = list(prompt), list(action)
+        if row.token_ids.tolist() != prompt + action:
+            raise ValueError("Training context differs from sampled context")
+        if row.action_mask.tolist() != [False] * len(prompt) + [True] * len(action):
+            raise ValueError("Training action mask differs from sampled actions")
+        actual = row.rollout_log_probs[len(prompt) - 1:].tolist()
+        expected = [item["logprob"] for item in content]
+        if len(actual) != len(expected) or not all(
+            math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-6) for left, right in zip(actual, expected)
+        ):
+            raise ValueError("Training rollout logprobs differ from sampled logprobs")
+        prompts.append(prompt)
+        actions.append(action)
+    prefix_samples = []
+    for index in range(len(prompts) - 1):
+        previous = prompts[index] + actions[index]
+        current = prompts[index + 1]
+        if current[:len(previous)] != previous and len(prefix_samples) < 3:
+            mismatch = next((position for position, pair in enumerate(zip(previous, current))
+                             if pair[0] != pair[1]), min(len(previous), len(current)))
+            prefix_samples.append({"call_index": index + 1, "first_mismatch": mismatch,
+                                   "previous_ids": previous[mismatch:mismatch + 8],
+                                   "current_ids": current[mismatch:mismatch + 8]})
+    return {
+        "model_calls": len(trajectories), "training_context_mismatches": 0,
+        "raw_prefix_mismatch_samples": prefix_samples,
+        "prompt_tokens": [len(item) for item in prompts], "action_tokens": [len(item) for item in actions],
+        "training_tokens": sum(len(prompt) + len(action) for prompt, action in zip(prompts, actions)),
+        "raw_prefix_mismatches": sum(
+            prompts[index + 1][:len(prompts[index]) + len(actions[index])] != prompts[index] + actions[index]
+            for index in range(len(prompts) - 1)
+        ),
+    }

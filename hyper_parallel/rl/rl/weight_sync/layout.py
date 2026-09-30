@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Tensor layouts, bounded direct plans, and plan-driven payload packing."""
+"""Source, destination, and transfer layout contracts."""
 
 
 from dataclasses import dataclass, replace
-from itertools import product
 from math import prod
-from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Mapping, NamedTuple, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -234,41 +233,6 @@ def local_tensor(value: Any) -> Any:
     return to_local() if callable(to_local) else value
 
 
-def pack_direct_bucket(
-    state_dict: Mapping[str, Any],
-    bucket: TransferBucket,
-    device: Any,
-) -> Any:
-    """Pack one direct route into a bounded byte tensor on ``device``."""
-    import torch  # pylint: disable=C0415,forbidden-backend-import
-
-    packed = torch.empty(bucket.total_bytes, dtype=torch.uint8, device=device)
-    for entry in bucket.entries:
-        value = state_dict.get(entry.source_key)
-        if value is None:
-            raise ValueError(
-                f"Direct reshard source parameter {entry.source_key!r} is missing"
-            )
-        source_slice = tuple(
-            slice(start, start + length)
-            for start, length in zip(entry.source_starts, entry.lengths)
-        )
-        fragment = local_tensor(value)[source_slice].detach()
-        if entry.physical_permutation != tuple(range(len(entry.lengths))):
-            fragment = fragment.permute(entry.physical_permutation)
-        fragment = fragment.contiguous()
-        if str(fragment.device) != str(device):
-            fragment = fragment.to(device)
-        raw = fragment.view(torch.uint8).view(-1)
-        if int(raw.numel()) != entry.num_bytes:
-            raise ValueError(
-                f"Direct reshard source fragment {entry.source_key!r} has "
-                f"{raw.numel()} bytes, expected {entry.num_bytes}"
-            )
-        packed.narrow(0, entry.buffer_offset, entry.num_bytes).copy_(raw)
-    return packed
-
-
 def _mesh_source_region(
     name: str, placements: tuple[Any, ...], device_mesh: Any,
     global_shape: tuple[int, ...], local_shape: tuple[int, ...],
@@ -294,6 +258,7 @@ def _mesh_source_region(
             f"derived={tuple(lengths)}, local={local_shape}, placements={placements}"
         )
     return starts
+
 
 
 def describe_source_tensor(name: str, tensor: Any, source_rank: int) -> dict[str, Any]:
@@ -557,232 +522,6 @@ def _resolve_worker_destinations(workers, global_shapes):
                 layout = _worker_tp_destination(name, shape, worker, workers)
             layouts.append(replace(layout, worker_rank=int(worker["worker_rank"])))
     return tuple(layouts)
-
-
-def _intersect_regions(
-    source: TensorRegion,
-    destination: TensorRegion,
-) -> Optional[TensorRegion]:
-    """Return the overlap between two tensor regions, if any."""
-    starts = tuple(max(left, right) for left, right in zip(source.starts, destination.starts))
-    ends = tuple(min(left, right) for left, right in zip(source.ends, destination.ends))
-    lengths = tuple(end - start for start, end in zip(starts, ends))
-    if any(length <= 0 for length in lengths):
-        return None
-    return TensorRegion(starts, lengths)
-
-
-def _aligned_offset(offset: int, alignment: int) -> int:
-    """Round one byte offset up to the requested alignment."""
-    return ((offset + alignment - 1) // alignment) * alignment
-
-
-def _tile_region(
-    region: TensorRegion,
-    *,
-    element_size: int,
-    bucket_size_bytes: int,
-) -> tuple[TensorRegion, ...]:
-    """Tile a rectangle in canonical order, independently of gather/direct routing."""
-    max_numel = bucket_size_bytes // element_size
-    if max_numel <= 0:
-        raise ValueError("Weight-sync bucket is smaller than one tensor element")
-    if region.numel <= max_numel:
-        return (region,)
-    chunks = [1] * len(region.lengths)
-    remaining = max_numel
-    for dim in reversed(range(len(chunks))):
-        chunks[dim] = min(region.lengths[dim], max(1, remaining))
-        remaining = max(1, remaining // chunks[dim])
-    ranges = [range(0, length, chunk) for length, chunk in zip(region.lengths, chunks)]
-    return tuple(
-        TensorRegion(
-            tuple(start + offset for start, offset in zip(region.starts, offsets)),
-            tuple(min(chunk, length - offset) for offset, chunk, length in zip(offsets, chunks, region.lengths)),
-        )
-        for offsets in product(*ranges)
-    )
-
-
-def _bucketize(
-    entries: Iterable[TransferEntry],
-    bucket_size_bytes: int,
-) -> tuple[TransferBucket, ...]:
-    """Assign aligned offsets and group bounded direct entries."""
-    buckets, current = [], []
-    size = 0
-    for entry in entries:
-        if entry.num_bytes > bucket_size_bytes:
-            raise ValueError(f"Weight-sync fragment {entry.name!r} exceeds its bucket")
-        offset = _aligned_offset(size, entry.element_size)
-        if current and offset + entry.num_bytes > bucket_size_bytes:
-            buckets.append(TransferBucket(tuple(current), size))
-            current, offset = [], 0
-        current.append(entry.with_buffer_offset(offset))
-        size = offset + entry.num_bytes
-    if current:
-        buckets.append(TransferBucket(tuple(current), size))
-    return tuple(buckets)
-
-
-def _split_entry(entry: TransferEntry, bucket_size_bytes: int) -> tuple[TransferEntry, ...]:
-    """Apply shared canonical tiles to the source and permuted destination."""
-    region = TensorRegion((0,) * len(entry.lengths), entry.lengths)
-    tiles = _tile_region(
-        region,
-        element_size=entry.element_size,
-        bucket_size_bytes=bucket_size_bytes,
-    )
-    if tiles == (region,):
-        return (entry,)
-    return tuple(
-        replace(
-            entry,
-            source_starts=tuple(start + offset for start, offset in zip(entry.source_starts, tile.starts)),
-            destination_starts=tuple(
-                start + tile.starts[axis] for start, axis in zip(entry.destination_starts, entry.physical_permutation)
-            ),
-            lengths=tile.lengths,
-            buffer_offset=0,
-        )
-        for tile in tiles
-    )
-
-
-def _transfer_entry(
-    source: SourceTensorLayout,
-    destination: DestinationTensorLayout,
-    intersection: TensorRegion,
-) -> TransferEntry:
-    """Translate one global intersection into source and destination offsets."""
-    source_starts = []
-    for local, start, base in zip(source.local_starts, intersection.starts, source.region.starts):
-        source_starts.append(local + start - base)
-    destination_offsets = tuple(
-        start - base for start, base in zip(intersection.starts, destination.region.starts)
-    )
-    destination_starts = []
-    for local, axis in zip(destination.local_starts, destination.physical_permutation):
-        destination_starts.append(local + destination_offsets[axis])
-    return TransferEntry(
-        name=source.name,
-        dtype_name=source.dtype_name,
-        element_size=source.element_size,
-        source_starts=tuple(source_starts),
-        destination_starts=tuple(destination_starts),
-        lengths=intersection.lengths,
-        destination_name=destination.target_name,
-        source_name=source.source_key,
-        destination_permutation=destination.physical_permutation,
-        destination_dtype_name=destination.dtype_name,
-        destination_element_size=destination.element_size,
-    )
-
-
-def _validate_coverage(
-    name: str,
-    destinations: Sequence[DestinationTensorLayout],
-    coverage: Mapping[tuple[str, int], int],
-) -> None:
-    """Require every destination region to receive each value exactly once."""
-    for destination in destinations:
-        actual = coverage.get((name, destination.route_rank), 0)
-        if actual != destination.region.numel:
-            raise ValueError(
-                f"Direct reshard plan covers {actual} values for {name!r} destination route "
-                f"{destination.route_rank}, expected {destination.region.numel}"
-            )
-
-
-def _validate_transfer_contract(source, destination):
-    """Require identical logical tensors or an explicitly accepted source dtype."""
-    name = source.name
-    dtype_compatible = (
-        source.dtype_name == destination.dtype_name
-        and source.element_size == destination.element_size
-    ) or source.dtype_name in destination.accepted_source_dtypes
-    if source.global_shape != destination.global_shape or not dtype_compatible:
-        raise ValueError(
-            f"Direct reshard tensor contract mismatch for {name!r}: "
-            f"source={(source.global_shape, source.dtype_name)}, "
-            f"destination={(destination.global_shape, destination.dtype_name)}"
-        )
-
-
-def _destination_worker_size(destinations):
-    """Return the physical routing extent only for worker-specific layouts."""
-    worker_ranks = [destination.worker_rank for destination in destinations if destination.worker_rank is not None]
-    return max(worker_ranks) + 1 if worker_ranks else None
-
-
-def _append_routes_for_name(
-    name: str,
-    source_layouts: Sequence[SourceTensorLayout],
-    destination_layouts: Sequence[DestinationTensorLayout],
-    route_entries: dict[tuple[int, int], list[TransferEntry]],
-    coverage: dict[tuple[str, int], int],
-) -> None:
-    """Add every compatible source-to-destination intersection for one tensor."""
-    for source in source_layouts:
-        for destination in destination_layouts:
-            _validate_transfer_contract(source, destination)
-            intersection = _intersect_regions(source.region, destination.region)
-            if intersection is None:
-                continue
-            entry = _transfer_entry(source, destination, intersection)
-            route_entries.setdefault((source.source_rank, destination.route_rank), []).append(entry)
-            coverage[(name, destination.route_rank)] = coverage.get((name, destination.route_rank), 0) + entry.numel
-
-
-def build_direct_reshard_plan(
-    sources: Sequence[SourceTensorLayout],
-    destinations: Sequence[DestinationTensorLayout],
-    *,
-    source_world_size: int,
-    bucket_size_bytes: int,
-) -> DirectReshardPlan:
-    """Compile global source/destination regions into bounded broadcast routes."""
-    if bucket_size_bytes <= 0:
-        raise ValueError("Direct reshard bucket_size_bytes must be positive")
-    sources_by_name: dict[str, list[SourceTensorLayout]] = {}
-    destinations_by_name: dict[str, list[DestinationTensorLayout]] = {}
-    for source in sources:
-        sources_by_name.setdefault(source.name, []).append(source)
-    for destination in destinations:
-        destinations_by_name.setdefault(destination.name, []).append(destination)
-    if set(sources_by_name) != set(destinations_by_name):
-        raise ValueError(
-            "Direct reshard source/destination parameter mismatch: "
-            f"source_only={sorted(set(sources_by_name) - set(destinations_by_name))}, "
-            f"destination_only={sorted(set(destinations_by_name) - set(sources_by_name))}"
-        )
-    route_entries: dict[tuple[int, int], list[TransferEntry]] = {}
-    coverage: dict[tuple[str, int], int] = {}
-    for name, source_layouts in sorted(sources_by_name.items()):
-        destination_layouts = destinations_by_name.get(name, ())
-        _append_routes_for_name(name, source_layouts, destination_layouts, route_entries, coverage)
-        _validate_coverage(name, destination_layouts, coverage)
-    tp_sizes = {destination.tp_size for destination in destinations}
-    if len(tp_sizes) != 1:
-        raise ValueError(f"Direct reshard destination TP sizes differ: {sorted(tp_sizes)}")
-    buckets = {
-        route: _bucketize(
-            (
-                fragment
-                for entry in entries
-                for fragment in _split_entry(entry, bucket_size_bytes)
-            ),
-            bucket_size_bytes,
-        )
-        for route, entries in route_entries.items()
-    }
-    return DirectReshardPlan(
-        source_world_size=source_world_size,
-        destination_tp_size=tp_sizes.pop(),
-        bucket_size_bytes=bucket_size_bytes,
-        buckets=buckets,
-        destination_worker_size=_destination_worker_size(destinations),
-    )
 
 
 def _unique_source_regions(name, descriptions, global_shape):

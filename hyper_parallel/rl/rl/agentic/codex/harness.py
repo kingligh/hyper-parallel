@@ -42,6 +42,8 @@ from rl.agentic.core.types import RewardResult
 from rl.dataset.contracts import PromptRecord, Trajectory
 DEFAULT_CODEX_VERSION = "0.152.1"
 RewardCallable = Callable[[str, PromptRecord], float | RewardResult]
+WorkspaceCallable = Callable[[PromptRecord, Path], None]
+ExecutionCallable = Callable[[list[str], Path, Path, dict[str, str]], tuple[list[str], Path, dict[str, str]]]
 _MODEL_METADATA_FALLBACK = re.compile(
     r"^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata;"
 )
@@ -107,6 +109,18 @@ def _toml_string(value: str) -> str:
 
 def _load_reward_callable(value: Any) -> RewardCallable:
     return load_reward_callable(value, "agentic.codex.reward_callable", "Codex")
+
+
+def _load_workspace_callable(value: Any) -> WorkspaceCallable | None:
+    if value is None:
+        return None
+    return load_reward_callable(value, "agentic.codex.workspace_callable", "Codex workspace")
+
+
+def _load_execution_callable(value: Any) -> ExecutionCallable | None:
+    if value is None:
+        return None
+    return load_reward_callable(value, "agentic.codex.execution_callable", "Codex execution")
 
 
 def _classify_codex_events(
@@ -187,6 +201,8 @@ class CodexAgentProgram:
         self.config = dict(config)
         self.end_of_turn_token_id = end_of_turn_token_id
         self.reward_callable = _load_reward_callable(self.config.get("reward_callable"))
+        self.workspace_callable = _load_workspace_callable(self.config.get("workspace_callable"))
+        self.execution_callable = _load_execution_callable(self.config.get("execution_callable"))
 
     async def run(self) -> tuple[Trajectory, ...]:
         """Run Codex, fetch the captured network trace, score it, and convert it."""
@@ -203,6 +219,10 @@ class CodexAgentProgram:
                 "artifact_dir": str(artifact_dir),
                 "max_completions": int(self.config["max_turns"]),
                 "generation": self._generation_settings(),
+                "instructions_override": self.config.get("system_instructions"),
+                "enable_thinking": self.config.get("enable_thinking"),
+                "compact_harness_context": self.config.get("compact_harness_context", False),
+                "exec_command_yield_time_ms": self.config.get("exec_command_yield_time_ms"),
             },
             timeout,
         )
@@ -311,6 +331,8 @@ class CodexAgentProgram:
             shutil.copytree(template, workspace_dir)
         else:
             workspace_dir.mkdir()
+        if self.workspace_callable is not None:
+            self.workspace_callable(self.prompt, workspace_dir)
         codex_home.mkdir()
         return artifact_dir, workspace_dir, codex_home
 
@@ -454,9 +476,16 @@ class CodexAgentProgram:
         """Run the configured program with isolated state and bounded execution time."""
         command = self._codex_command()
         environment = _codex_environment(self.gateway_url, codex_home, session_id)
+        environment["HYPER_CODEX_GATEWAY_URL"] = self.gateway_url
+        environment["HYPER_CODEX_MAX_CALLS"] = str(self.config.get("max_turns", 1))
+        cwd = workspace_dir
+        if self.execution_callable is not None:
+            command, cwd, environment = self.execution_callable(
+                command, workspace_dir, codex_home, environment
+            )
         process = await asyncio.create_subprocess_exec(
             *command,
-            cwd=workspace_dir,
+            cwd=cwd,
             env=environment,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -578,6 +607,16 @@ class CodexProgramFactory(HarnessProgramFactory):
 
     program_type = CodexAgentProgram
     label = "Codex"
+
+    def __init__(
+        self, runtime: CodexRuntime, end_of_turn_token_id: int | None, generation_config: Mapping[str, Any]
+    ) -> None:
+        super().__init__(runtime, end_of_turn_token_id, generation_config)
+        program = self.config.get("program_callable")
+        if program is not None:
+            self.program_type = load_reward_callable(
+                program, "agentic.codex.program_callable", "Codex program"
+            )
 
 
 def _mcp_environment(server):

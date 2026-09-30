@@ -228,6 +228,7 @@ class PromptDataset:
         max_samples: Optional[int] = None,
         prompt_instruction: Optional[str] = None,
         row_adapter: Optional[str] = None,
+        metadata_columns: Optional[Sequence[str]] = None,
     ) -> None:
         """Load and validate a tokenized prompt dataset from parquet."""
         path = Path(parquet_path)
@@ -246,6 +247,15 @@ class PromptDataset:
             raise ValueError(f"Prompt parquet contains no rows: {path}")
         self._row_adapter = _load_row_adapter(row_adapter, prompt_column, answer_column, prompt_instruction)
         columns = set(str(column) for column in frame.columns)
+        selected_metadata = tuple(metadata_columns or ())
+        if any(not isinstance(column, str) or not column.strip() for column in selected_metadata):
+            raise ValueError("data.metadata_columns must contain non-empty column names")
+        if len(set(selected_metadata)) != len(selected_metadata):
+            raise ValueError("data.metadata_columns must not contain duplicates")
+        missing_metadata = sorted(set(selected_metadata) - columns)
+        if missing_metadata:
+            raise ValueError(f"Prompt parquet is missing metadata columns: {missing_metadata}")
+        self._metadata_columns = selected_metadata
         self._prompt_column = _pick_column(
             columns, prompt_column, _PROMPT_COLUMN_CANDIDATES, "prompt", self._row_adapter is None
         )
@@ -353,6 +363,7 @@ class PromptDataset:
             "source_prompt": source_prompt,
             "prompt": prompt,
             "ground_truth": _normalize_ground_truth(answer_source, index),
+            "metadata": {column: _to_builtin(record[column]) for column in self._metadata_columns},
             "input_ids": input_ids,
             "attention_mask": attention_mask,
         }

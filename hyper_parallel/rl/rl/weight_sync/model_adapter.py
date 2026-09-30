@@ -14,6 +14,8 @@
 # ============================================================================
 """Model-owned mappings between Trainer, canonical, and rollout weights."""
 
+from __future__ import annotations
+
 __all__ = [
     "ModelWeightAdapter",
     "build_model_weight_adapter",
@@ -25,10 +27,13 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
-from rl.roles.model_setup import VLLMModelRegistration
-from rl.roles.weight_sync.layout import describe_source_tensor
+from rl.weight_sync.layout import describe_source_tensor
+
+# Annotation-only references must not initialize roles while weight_sync is importing.
+if TYPE_CHECKING:
+    from rl.roles.model_setup import VLLMModelRegistration
 
 
 @dataclass(frozen=True)

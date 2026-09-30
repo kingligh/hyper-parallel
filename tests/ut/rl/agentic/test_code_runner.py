@@ -24,7 +24,7 @@ from typing import Any, Optional
 import pytest
 import torch
 
-from rl.agentic.core import runner as runner_module
+from rl.agentic.core import trajectory_runner as runner_module
 from rl.agentic.core.types import Observation, Transition
 from rl.dataset.contracts import ExperienceBatch, Message, PromptRecord, Trajectory
 from rl.dataset.data_source import collate_prompt_samples

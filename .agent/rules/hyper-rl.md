@@ -28,7 +28,7 @@ Load the affected product contract rather than every RL document.
   Qwen3 adapters belong in `models/qwen3/`; main-project callers use the shared AutoModel builder.
   RL construction compatibility belongs in `hyper_parallel/rl/rl/roles/qwen3_builder.py`; value heads and Critic behavior
   belong in `hyper_parallel/rl/rl/roles/policy/critic.py`.
-- The built-in algorithms are GRPO and PPO. Qwen3 dense retains FSDP sharding with TP1/TP2 and
+- The built-in algorithms are GRPO, PPO, and GSPO. GSPO currently targets Qwen3 dense. Qwen3 dense retains FSDP sharding with TP1/TP2 and
   `dp_replicate=cp=pp=ep=edp_shard=1`; shared vLLM rollout supports colocated or disjoint mode.
 - Qwen3-30B-A3B (`qwen3_moe`) uses the shared AutoModel builder and the existing Qwen3-MoE recipe.
   Its RL scope is GRPO with colocated native vLLM, consistency off and EPLB off; MoE PPO and disjoint rollout are rejected.
@@ -37,6 +37,10 @@ Load the affected product contract rather than every RL document.
   [MoE recipe](../../hyper_parallel/rl/examples/gsm8k/configs/qwen3_30b_a3b_gsm8k_vllm.yaml) and
   [MoE validation scope](../../hyper_parallel/rl/docs/moe_code_agent.md#功能与支持边界).
   Check `rl/config.py` and `rl/roles/model_setup.py` for the executable boundary; do not infer RL support from a main-project API.
+- Optional colocated Reward Model scoring is currently scoped to internal Qwen3 dense GSM8K with GRPO/GSPO.
+  Task scoring functions stay in `examples/`; `rl/reward_model/` owns only the frozen vLLM service and
+  completion checks. The rollout must sleep before RM wake and the RM must sleep before training or
+  publication. The CPU contract is implemented; real NPU acceptance remains pending.
 - Weight synchronization selects `full_gather` or `direct_reshard`, with IPC for colocated and HCCL for disjoint.
   Publication errors propagate; there is no automatic fallback. Preserve this contract when fixing failures.
 - Single-turn Python stdio tasks use `examples.code.agent` / `code_stdio` with the internal runner.

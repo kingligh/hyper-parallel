@@ -863,7 +863,7 @@ def test_agent_session_guards_and_terminal_paths() -> None:
 def test_runner_boundary_validation() -> None:
     """AgentRunner rejects invalid limits, seeds, masks, and stale policies."""
     _modules()
-    runner_module = importlib.import_module("rl.agentic.core.runner")
+    runner_module = importlib.import_module("rl.agentic.core.trajectory_runner")
     rollout = importlib.import_module("rl.roles.rollout.base")
     settings = rollout.GenerationSettings(
         max_new_tokens=2,
@@ -898,7 +898,7 @@ def test_runner_complete_batched_rollout_and_helper_branches(
 ) -> None:
     """AgentRunner drives active and dummy rows and validates engine boundaries."""
     modules = _modules()
-    runner_module = importlib.import_module("rl.agentic.core.runner")
+    runner_module = importlib.import_module("rl.agentic.core.trajectory_runner")
     rollout = importlib.import_module("rl.roles.rollout.base")
 
     class Tokenizer:

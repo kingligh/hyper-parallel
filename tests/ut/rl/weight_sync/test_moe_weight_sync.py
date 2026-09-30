@@ -24,13 +24,12 @@ from unittest.mock import patch
 
 import torch
 
-from rl.roles.weight_sync.layout import (
-    build_direct_reshard_plan, pack_direct_bucket, resolve_destination_layouts, resolve_source_layouts,
-)
-from rl.roles.weight_sync.model_adapter import ModelWeightAdapter, _native_expert_descriptions
-from rl.roles.weight_sync import vllm_worker
-from rl.roles.weight_sync.ipc import IPCWeightTransport, PhysicalRolloutWorker
-from rl.roles.weight_sync.packed_weight import PackedWeight, unpack_packed_weights
+from rl.weight_sync.layout import resolve_destination_layouts, resolve_source_layouts
+from rl.weight_sync.model_adapter import ModelWeightAdapter, _native_expert_descriptions
+from rl.weight_sync import vllm_worker
+from rl.weight_sync.ipc import IPCWeightTransport, PhysicalRolloutWorker
+from rl.weight_sync.packed_weight import PackedWeight, pack_direct_bucket, unpack_packed_weights
+from rl.weight_sync.transfer import DirectReshardStrategy
 
 from hyper_parallel.core.dtensor.placement_types import Shard
 
@@ -109,7 +108,9 @@ class TestMoEWeightSync(unittest.TestCase):
                 workers.append({'worker_rank': rank, 'dp_rank': rank, 'tp_rank': 0, 'tp_size': 1, 'tensors': tensors})
             shapes = {item.name: item.global_shape for item in sources}
             destinations = resolve_destination_layouts(workers, shapes)
-            plan = build_direct_reshard_plan(sources, destinations, source_world_size=4, bucket_size_bytes=32)
+            plan = DirectReshardStrategy.build_direct_reshard_plan(
+                sources, destinations, source_world_size=4, bucket_size_bytes=32,
+            )
             self.assertEqual(plan.destination_worker_size, 2)
             for (source_rank, rank), buckets in plan.buckets.items():
                 for bucket in buckets:

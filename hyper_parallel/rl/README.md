@@ -105,7 +105,7 @@ cd hyper-parallel
 ### 2. 准备运行镜像
 
 ```bash
-docker pull swr.cn-east-3.myhuaweicloud.com/huawei-hyper-rl/hyper-rl:v0.22.1rc1-unified-arm64
+docker image inspect hyper-parallel/hyper-rl:v0.22.1rc1-unified-arm64
 
 npu-smi info
 ```
@@ -149,25 +149,16 @@ export HYPER_QWEN3_TP_MAX_STEPS=1
 
 ### 示例二：Agentic 多轮交互
 
-**Qwen3-4B + Search-R1，两卡两步检索问答。** 模型调用本地检索工具并根据观察继续回答，无需外部 Agent CLI。数据目录需包含 `train.parquet`（`prompt`、`answer`）和 `corpus.jsonl`，见[数据准备](https://atomgit.com/mindspore/hyper-parallel/blob/f9f2696341c631327524ea37b6b2ca328076980a/hyper_parallel/rl/examples/agents/search_R1/prepare_search_r1_data.py)。
+**Qwen3-4B + Search-R1, two Ascend devices.** The Codex agent searches per-question HotpotQA article files in an isolated container. Prepare data with [prepare_data.py](examples/search_r1/prepare_data.py), then follow the [Search-R1 procedure](docs/search_r1.md).
 
-```bash
-export HYPER_VLLM_IMAGE=swr.cn-east-3.myhuaweicloud.com/huawei-hyper-rl/hyper-rl:v0.22.1rc1-unified-arm64
-export HYPER_VLLM_MODEL_ROOT=/absolute/path/to/Qwen3-4B
-export HYPER_VLLM_DATA_ROOT=/absolute/path/to/hotpotqa
-export HYPER_VLLM_RESULT_ROOT=/absolute/path/to/results/search-r1
-export HYPER_VLLM_VISIBLE_DEVICES=0,1
-export HYPER_VLLM_MODEL_IMPLEMENTATION=native
-export HYPER_AGENTIC_TASK=search_r1
+~~~bash
+cd hyper_parallel/rl
+bash examples/search_r1/scripts/run_search_r1.sh 0,1 2 /absolute/path/to/prepared-hotpotqa
+~~~
 
-./hyper_parallel/rl/examples/gsm8k/scripts/run_qwen3_4b_agentic_docker.sh
-```
+The script uses the unified ARM64 image and verifies optimizer updates, episode artifacts, and the final checkpoint. Reserve both devices and supply the local model and prepared data paths as described in the procedure.
 
-**成功判据**：退出码为 0，结果目录 `train.log` 中 `train/global_step=2`、`policy/version=2`，并生成 `checkpoints/step_2/checkpoint_complete.json`。通过日志样本检查实际工具交互。
-
-两个示例验证运行流程，不代表学习收益。完整训练使用[训练入口](train_rl.py)，基于 [GSM8K](examples/gsm8k/configs/qwen3_4b_gsm8k_vllm_production.yaml) 或 [Search-R1](https://atomgit.com/mindspore/hyper-parallel/blob/f9f2696341c631327524ea37b6b2ca328076980a/hyper_parallel/rl/examples/agents/search_R1/configs/multi_turn.yaml) 配置调整训练预算、评估与保存，不沿用检查脚本的固定步数判据。
-
-其他入口：[单轮 code](examples/code/README.md) · [程序化 Agent](docs/agentic_rl.md) · [部署与采样](docs/vllm_rollout.md) · [Bit-Exact 校验](docs/qwen3_training_inference_consistency.md) · [MoE 模型](https://atomgit.com/mindspore/hyper-parallel/blob/f9f2696341c631327524ea37b6b2ca328076980a/hyper_parallel/rl/docs/moe_models.md)。
+Other entries: [single-turn code](examples/code/README.md), [program agents](docs/agentic_rl.md), [rollout](docs/vllm_rollout.md).
 
 ---
 
@@ -213,6 +204,11 @@ def build_environment(context: EpisodeContext) -> GSM8KMultiTurnEnvironment:
 
 在完整训练 YAML 中使用 [GSM8K 多轮配置](examples/gsm8k/configs/multi_turn.yaml)的 `agentic` 设置，并将 `module_path` 改为 `examples.gsm8k.custom_reward`、`environment` 改为 `custom_gsm8k`。该示例只替换多轮任务的终局评分，不修改 Trainer 或权重发布流程。
 
+GSM8K 的规则评分与模型评分都在 [agent.py](examples/gsm8k/agent.py)。不配置顶层 `reward_model` 时使用规则奖励；
+使用[模型评分配方](examples/gsm8k/configs/qwen3_4b_gsm8k_model_reward.yaml)并设置
+`reward_model.scorer: examples.gsm8k.agent:score_gsm8k_environment_reward` 时，生成结束后调用 RM 评分。
+共设备切换及配置要求见 [RM 文档](docs/reward_model.md)。
+
 ---
 
 <!-- markdownlint-disable-next-line MD033 -->
@@ -227,6 +223,8 @@ def build_environment(context: EpisodeContext) -> GSM8KMultiTurnEnvironment:
 | 能力 | 状态 | 范围 |
 | :--- | :---: | :--- |
 | **同步 GRPO** | ✅ | 采样、学习、发布、评估与恢复；advantage / loss 可扩展，无需 Ray |
+| **GSPO** | 🧪 | Qwen3 dense 的[完整配方](examples/gsm8k/configs/qwen3_4b_gsm8k_gspo.yaml)、序列归一化 Actor 和指标已接入；NPU ST 待运行 |
+| **共卡 Reward Model** | 🧪 | 可选冻结 vLLM RM 客户端、生成后评分回调和[Qwen3 Dense 配方](examples/gsm8k/configs/qwen3_4b_gsm8k_model_reward.yaml)已接入；真实 NPU 验收待运行 |
 | **单轮与多轮工具任务** | ✅ | Python 定义环境、工具与奖励，共用 token-first 轨迹；环境观察不参与 loss |
 | **单轮 Python code** | ✅ | 私有 stdio 测试、远程 SandboxFusion、全测二值奖励；dense 与 MoE 四卡两步/评估配方已验证，见 [code 示例](examples/code/README.md) |
 | **程序化 Agent** | ◐ | Codex / DeepSeek：真实调用上下文、episode GRPO、DP 补齐和失败归因；自定义程序需适配，见 [Agentic RL](docs/agentic_rl.md) |
@@ -236,6 +234,10 @@ def build_environment(context: EpisodeContext) -> GSM8KMultiTurnEnvironment:
 | **PPO / GAE / Critic** | ✅ | Dense Qwen3 内部 runner 已完成两卡 Actor/Critic 两步更新与发布；外部 harness 分段轨迹、MoE PPO 不支持 |
 | **异步与多节点训练** | ○ | Ray 采样/学习并发、策略滞后与恢复；扩展多节点及长耗时 Agent 异步 |
 | **多模态训练与交互** | ○ | 视觉 RL、媒体与动作对齐、多模态 Agent |
+
+配置顶层 `reward_model` 时，Trainer 创建空闲 RM 句柄；生成服务休眠后才启动或唤醒 RM，并调用 `reward_model.scorer` 指定的 `examples` 异步函数。未配置时继续由环境规则函数直接评分。模型分数不自动记为准确率；共卡模式仅支持内部 Qwen3 Dense，详见[迁移与调用合同](docs/reward_model.md)。示例 Qwen3-4B 是用于验证评分链路的生成式模型，并非已训练和校准的偏好奖励模型。
+
+GSPO 默认 `kl_coef=0`，不创建 Reference 或 Critic；GRPO/PPO/GSPO 仅在 `kl_coef > 0` 时创建 Reference。GSPO 需设置 `loss_aggregation=seq-mean-token-mean`，按有效动作 token 求序列均值，再按有效序列求均值。MoE 与外部程序 Agent 仍只支持 GRPO。
 
 ### 代表模型
 
@@ -297,9 +299,14 @@ python -m pytest -q hyper_parallel/rl/tests/st/test_st_runtime.py hyper_parallel
 python -m pytest -vv -s hyper_parallel/rl/tests/st/test_rl_st.py
 ```
 
+仅运行三个 GSPO 场景可使用 `python -m pytest -vv -s hyper_parallel/rl/tests/st/test_rl_st.py -k gspo`。
+共卡 RM 的 TP1、TP2 和恢复场景使用 `python -m pytest -vv -s hyper_parallel/rl/tests/st/test_rl_st.py -k reward-model`。
+
 真实 ST 必须配置 `RL_ST_MODEL`、`RL_ST_DATA`、`RL_ST_DEVICES`，并预置
-[统一运行镜像](docker/README.md)。六个场景串行执行，最多需要四张分配的 NPU。
+[统一运行镜像](docker/README.md)。十二个场景串行执行，最多需要四张分配的 NPU。
 数据目录需包含 `train.parquet`、`test.parquet`；结果默认写入 `hyper_parallel/rl/output/`。
+当前 Ascend 运行镜像需以 root 身份启动训练；运行期间 `/results` 可能产生 root 所有的文件。
+训练脚本和 ST 在退出后将各自产物归还宿主启动用户，确保结果可读取和删除。
 独立 ST 不打入运行包，手动执行时需使用完整仓库源码。
 
 新增 MoE、code 和 agent 的验证入口为 `tests/st/test_feature_st.py`：包含两进程 CPU/Gloo 补齐验证、

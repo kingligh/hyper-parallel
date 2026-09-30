@@ -52,9 +52,10 @@ from rl.roles.model_setup import (
     trainer_attention_implementation,
 )
 from rl.roles.policy.critic import build_value_model
+from rl.reward_model.scoring import load_reward_function
 from rl.roles.qwen3_builder import build_causal_lm
 from rl.roles.rollout import ROLLOUT_ENGINES
-from rl.roles.weight_sync.config import resolve_weight_sync_config
+from rl.weight_sync.config import resolve_weight_sync_config
 
 from hyper_parallel.components.checkpoint.config import CheckpointingConfig
 from hyper_parallel.components.optim import AdamW, MultiLRScheduler
@@ -88,6 +89,7 @@ _EXPECTED_TOP_LEVEL = frozenset(
         "train",
         "logging",
         "consistency",
+        "reward_model",
     )
 )
 
@@ -746,6 +748,84 @@ def validate_config(config: Mapping[str, Any], algorithm: RLAlgorithm) -> None:
         _ = _trainer_topology(accelerator)
     _validate_checkpoint(required_mapping(train, "checkpoint"))
     _validate_logging(required_mapping(config, "logging"))
+    if "reward_model" in config:
+        _validate_reward_model(config, model_registration)
+
+
+def _validate_reward_model(config: Mapping[str, Any], model_registration: ModelRegistration) -> None:
+    """Require a complete single-node, colocated RM before any runtime starts."""
+    reward = required_mapping(config, "reward_model")
+    allowed = {
+        "scorer", "model_path", "scoring", "deployment", "tensor_parallel_size", "data_parallel_size",
+        "port", "dtype", "gpu_memory_utilization", "startup_timeout", "request_timeout", "max_num_seqs",
+        "max_model_len", "kv_cache_memory_bytes", "max_new_tokens", "server_hccl_if_base_port",
+        "server_hccl_npu_socket_port_range", "log_path", "max_retries", "served_model_name",
+        "max_concurrency",
+    }
+    if set(reward) - allowed:
+        raise ValueError(f"Unsupported reward_model fields: {sorted(set(reward) - allowed)}")
+    agentic = required_mapping(config, "agentic")
+    if agentic.get("runner", "internal") != "internal" or agentic.get("environment") != "gsm8k_tools":
+        raise ValueError("Colocated reward_model currently requires the internal GSM8K environment")
+    if required_mapping(config, "algorithm").get("name") not in {"grpo", "gspo"}:
+        raise ValueError("Colocated reward_model currently supports GRPO or GSPO")
+    if model_registration.family != "qwen3":
+        raise ValueError("Colocated reward_model currently requires Qwen3 dense")
+    if reward.get("deployment") != "colocated" or not uses_colocated_vllm(config):
+        raise ValueError("reward_model requires colocated vLLM rollout")
+    train = required_mapping(config, "train")
+    if not required_mapping(train, "accelerator").get("cpu_offload", False):
+        raise ValueError("Colocated reward_model requires train.accelerator.cpu_offload=true")
+    scorer = reward.get("scorer")
+    try:
+        load_reward_function(scorer)
+    except (ImportError, AttributeError, TypeError) as error:
+        raise ValueError(f"Invalid reward_model.scorer: {error}") from error
+    if reward.get("scoring") not in {"generative", "discriminative"}:
+        raise ValueError("reward_model.scoring must be generative or discriminative")
+    path = Path(_path_value(reward, "model_path"))
+    identity_path = path / "config.json"
+    if not identity_path.is_file():
+        raise ValueError(f"Reward model configuration not found: {identity_path}")
+    if reward["scoring"] == "discriminative":
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        if not any("SequenceClassification" in name for name in identity.get("architectures", [])):
+            raise ValueError("Discriminative RM requires a trained sequence-classification checkpoint")
+    rollout_vllm = required_mapping(required_mapping(config, "rollout"), "vllm")
+    for field in ("tensor_parallel_size", "data_parallel_size", "port", "server_hccl_if_base_port"):
+        value = reward.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"reward_model.{field} must be a positive integer")
+    tp, dp = reward["tensor_parallel_size"], reward["data_parallel_size"]
+    rollout_world = int(rollout_vllm["tensor_parallel_size"]) * int(rollout_vllm["data_parallel_size"])
+    if tp not in (1, 2) or tp * dp != rollout_world:
+        raise ValueError("RM TP1/TP2 x DP must cover the complete rollout device set")
+    if not 1024 <= reward["port"] <= 65535 or reward["port"] == int(rollout_vllm["port"]):
+        raise ValueError("RM port must be valid and distinct from rollout")
+    base_port = reward["server_hccl_if_base_port"]
+    if not 1024 <= base_port <= 65436:
+        raise ValueError("RM HCCL base port must leave room for its range")
+    try:
+        start, end = map(int, str(reward["server_hccl_npu_socket_port_range"]).split("-"))
+    except (KeyError, ValueError) as error:
+        raise ValueError("RM HCCL socket range must use start-end syntax") from error
+    if not 1024 <= start <= base_port <= end <= 65535:
+        raise ValueError("RM HCCL socket range must contain its base port")
+    actor_base = rollout_vllm.get("server_hccl_if_base_port")
+    if actor_base is not None and start <= int(actor_base) <= end:
+        raise ValueError("RM and Actor rollout HCCL ports overlap")
+    if reward.get("dtype", "bfloat16") != "bfloat16":
+        raise ValueError("Colocated RM currently requires bfloat16")
+    for field in ("startup_timeout", "request_timeout", "gpu_memory_utilization"):
+        value = float(reward.get(field, 0.35 if field == "gpu_memory_utilization" else 600))
+        if not math.isfinite(value) or value <= 0 or (field == "gpu_memory_utilization" and value > 1):
+            raise ValueError(f"reward_model.{field} must be finite and positive")
+    for field in ("max_num_seqs", "max_model_len", "kv_cache_memory_bytes", "max_new_tokens", "max_concurrency"):
+        if field in reward and (not isinstance(reward[field], int) or isinstance(reward[field], bool)
+                                or reward[field] <= 0):
+            raise ValueError(f"reward_model.{field} must be positive")
+    if int(reward.get("max_retries", 2)) < 0:
+        raise ValueError("reward_model.max_retries must be non-negative")
 
 
 def _load_automatic_limit_text_config(model: Mapping[str, Any]) -> Mapping[str, Any]:

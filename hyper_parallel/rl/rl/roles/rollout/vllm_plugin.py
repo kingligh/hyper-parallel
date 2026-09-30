@@ -33,7 +33,7 @@ from rl.consistency.qwen3_dense import install_qwen3_rollout_rms_norm_diagnostic
 from rl.roles.model_setup import (
     HYPER_QWEN3_ARCHITECTURE,
 )
-from rl.roles.weight_sync.vllm_worker import install_vllm_weight_sync_hooks
+from rl.weight_sync.vllm_worker import install_vllm_weight_sync_hooks
 from rl.tool_protocol import install_tool_evidence
 
 HYPER_QWEN3_MODEL_CLASS = "rl.roles.rollout.consistency_models.qwen3.model:HyperQwen3ForCausalLM"

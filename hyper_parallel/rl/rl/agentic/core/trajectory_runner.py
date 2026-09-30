@@ -406,6 +406,7 @@ class AgentRunner:
                 "interaction_mode": self.interaction_mode.value,
                 "max_turns": self.max_turns,
                 "max_episode_tokens": self.max_episode_tokens,
+                **({"reward_status": "pending"} if getattr(self, "environment_settings", {}).get("defer_reward_model") else {}),
             },
         )
 

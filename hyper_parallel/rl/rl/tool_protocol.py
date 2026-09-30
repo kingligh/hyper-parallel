@@ -16,9 +16,14 @@
 
 from contextvars import ContextVar
 from functools import wraps
+import hashlib
 import json
 import re
 from typing import Any, Iterable, Mapping
+
+
+class InfrastructureRolloutError(RuntimeError):
+    """A rollout failure that must not enter training as a task reward."""
 
 
 _CAPTURE = ContextVar("hyper_tool_protocol", default=None)
@@ -59,7 +64,54 @@ def _response_message(response: dict) -> tuple[dict, dict]:
     return choice, message
 
 
+def _json_error_type(error_message: str) -> str:
+    message = error_message.lower()
+    if "invalid \\escape" in message:
+        return "invalid_escape"
+    if "unterminated string" in message:
+        return "unterminated_string"
+    if "invalid control character" in message:
+        return "invalid_control_character"
+    if "expecting ',' delimiter" in message or "expecting ':' delimiter" in message:
+        return "missing_delimiter"
+    if "extra data" in message:
+        return "extra_data"
+    return "other_json_error"
+
+
 def inspect_tool_response(response: dict) -> dict:
+    """Include stable source and parser diagnostics for every protocol failure."""
+    outcome = _inspect_tool_response(response)
+    reason = outcome.get("failure_reason")
+    if reason is None:
+        return outcome
+    origin = outcome.get("failure_origin")
+    if origin == "model":
+        category = "model_invalid_json" if reason == "invalid_json" else "model_invalid_tool_call"
+        stage = "generation"
+    elif reason in {"parser_result_mismatch", "missing_parser_result"}:
+        category, stage = "parser_error", "hermes_parse"
+    elif reason in {"parser_input_mismatch", "incomplete_parser_evidence"}:
+        category, stage = "unknown_json_error", "serialization"
+    elif reason == "missing_parser_evidence":
+        category, stage = "unknown_json_error", "hermes_parse"
+    else:
+        category, stage = "serialization_error", "serialization"
+    outcome = {**outcome, "error_category": category, "failure_stage": stage}
+    if reason == "invalid_json":
+        parser_error = outcome.get("parser_error") or {}
+        outcome["json_error_type"] = _json_error_type(str(parser_error.get("message", "")))
+    evidence = response.get("hyper_tool_protocol")
+    if isinstance(evidence, list) and len(evidence) == 1 and isinstance(evidence[0], dict):
+        blocks = _BLOCK.findall(evidence[0].get("parser_input", ""))
+        if blocks:
+            outcome["raw_tool_call_json"] = blocks[0]
+            outcome["raw_tool_call_sha256"] = hashlib.sha256(blocks[0].encode("utf-8")).hexdigest()
+            outcome["tool_call_block_index"] = 0
+    return outcome
+
+
+def _inspect_tool_response(response: dict) -> dict:
     """Attribute only failures supported by immutable engine/parser evidence."""
     choice, message = _response_message(response)
     evidence = response.get("hyper_tool_protocol")

@@ -7,7 +7,7 @@
 镜像公开可读，无需登录：
 
 ```bash
-image=swr.cn-east-3.myhuaweicloud.com/huawei-hyper-rl/hyper-rl:v0.22.1rc1-unified-arm64
+image=hyper-parallel/hyper-rl:v0.22.1rc1-unified-arm64
 docker pull "${image}"
 docker image inspect --format '{{index .RepoDigests 0}} {{.Os}}/{{.Architecture}}' "${image}"
 ```

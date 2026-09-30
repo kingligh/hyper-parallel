@@ -64,6 +64,7 @@ def test_evaluator_excludes_padding_and_aggregates_rank_zero_results(
         @staticmethod
         def generate(prompt_records: Any, policy_version: int) -> Any:
             assert len(prompt_records) == 2
+            assert all(prompt.metadata["phase"] == "evaluation" for prompt in prompt_records)
             assert policy_version in (7, 8)
             return SimpleNamespace(
                 rewards=torch.tensor([1.0, 999.0]),

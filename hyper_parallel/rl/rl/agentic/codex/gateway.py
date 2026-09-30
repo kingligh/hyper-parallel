@@ -23,12 +23,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from rl.agentic.codex.protocol import CodexResponsesProtocol
 from rl.tool_protocol import inspect_tool_response
@@ -52,6 +53,10 @@ class _Session:
     artifact_dir: Optional[Path]
     max_completions: int
     generation: dict[str, Any]
+    instructions_override: Optional[str] = None
+    enable_thinking: Optional[bool] = None
+    compact_harness_context: bool = False
+    exec_command_yield_time_ms: Optional[int] = None
     completions: list[dict[str, Any]] = field(default_factory=list)
     reserved_completions: int = 0
     inflight_requests: int = 0
@@ -105,11 +110,31 @@ class _State:
                 "Unknown Codex generation settings: "
                 f"{sorted(unknown_generation)}"
             )
+        instructions_override = payload.get("instructions_override")
+        if instructions_override is not None and (
+            not isinstance(instructions_override, str) or not instructions_override
+        ):
+            raise ValueError("Codex session instructions_override must be non-empty text or null")
+        enable_thinking = payload.get("enable_thinking")
+        if enable_thinking is not None and not isinstance(enable_thinking, bool):
+            raise ValueError("Codex session enable_thinking must be a boolean or null")
+        compact_harness_context = payload.get("compact_harness_context", False)
+        if not isinstance(compact_harness_context, bool):
+            raise ValueError("Codex session compact_harness_context must be a boolean")
+        command_yield = payload.get("exec_command_yield_time_ms")
+        if command_yield is not None and (
+            not isinstance(command_yield, int) or isinstance(command_yield, bool) or command_yield <= 0
+        ):
+            raise ValueError("Codex session exec_command_yield_time_ms must be positive or null")
         session = _Session(
-            int(payload["policy_version"]),
-            artifact_dir,
-            max_completions,
-            dict(generation),
+            policy_version=int(payload["policy_version"]),
+            artifact_dir=artifact_dir,
+            max_completions=max_completions,
+            generation=dict(generation),
+            instructions_override=instructions_override,
+            enable_thinking=enable_thinking,
+            compact_harness_context=compact_harness_context,
+            exec_command_yield_time_ms=command_yield,
         )
         with self.lock:
             if self.closing:
@@ -144,6 +169,13 @@ class _State:
             session.closing = True
             if not self.idle.wait_for(lambda: session.inflight_requests == 0, timeout=self.request_timeout):
                 raise RuntimeError(f"Timed out reading in-flight Codex session: {session_id}")
+            return {"policy_version": session.policy_version, "completions": list(session.completions),
+                    "failure": session.failure}
+
+    def observe(self, session_id: str) -> dict[str, Any]:
+        """Read captured evidence without sealing admission for citation repair."""
+        with self.lock:
+            session = self.get(session_id)
             return {"policy_version": session.policy_version, "completions": list(session.completions),
                     "failure": session.failure}
 
@@ -206,6 +238,24 @@ class _State:
             session.completions.append(record)
         self.event(session_id, "completion.recorded", record)
 
+    def mark_protocol_recovery(
+        self, session_id: str, records: list[dict[str, Any]],
+        recovery_ordinal: int, valid_tool_call: bool,
+    ) -> None:
+        """Link rejected sampled actions to the first subsequent valid action."""
+        with self.lock:
+            for record in records:
+                record["metadata"].update(
+                    recovered_with_valid_action=True,
+                    recovered_with_valid_tool_call=valid_tool_call,
+                    recovery_call_index=recovery_ordinal,
+                )
+        self.event(session_id, "tool_protocol.recovered", {
+            "recovery_call_index": recovery_ordinal,
+            "valid_tool_call": valid_tool_call,
+            "event_ids": [record["metadata"]["protocol_event_id"] for record in records],
+        })
+
     def event(self, session_id: str, event_type: str, payload: dict[str, Any]) -> None:
         """Append a diagnostic event when the session has artifact storage."""
         try:
@@ -245,7 +295,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith(prefix):
             session_id = unquote(path[len(prefix):])
             try:
-                snapshot = self.server.state.snapshot(session_id)
+                live = parse_qs(urlparse(self.path).query).get("live") == ["1"]
+                snapshot = (self.server.state.observe(session_id) if live
+                            else self.server.state.snapshot(session_id))
             except ValueError as error:
                 self._error(HTTPStatus.NOT_FOUND, str(error))
                 return
@@ -321,7 +373,7 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             self.server.state.finish_request(session)
 
-    def _model_completion(self, session_id: str, original: dict, transformed: dict) -> tuple[dict, dict]:
+    def _model_completion(self, session_id: str, original: dict, transformed: dict) -> tuple[dict, dict, dict]:
         """Admit one call and atomically convert its reservation into captured evidence."""
         state = self.server.state
         session = state.reserve_completion(session_id)
@@ -334,10 +386,19 @@ class _Handler(BaseHTTPRequestHandler):
             finally:
                 state.backend_slots.release()
             outcome = inspect_tool_response(response)
+            will_deliver_feedback = (
+                outcome.get("failure_origin") == "model"
+                and len(session.completions) + 1 < session.max_completions
+            )
             record = {"timestamp": time.time(), "original_request": original, "request": transformed,
                       "response": response, "metadata": {"policy_version": session.policy_version,
-                                                          "session_id": session_id, **outcome}}
-            return response, outcome
+                                                          "session_id": session_id,
+                                                          "protocol_event_id": f"{session_id}:{uuid.uuid4().hex}",
+                                                          "feedback_delivered": will_deliver_feedback,
+                                                          "recovered_with_valid_action": False,
+                                                          "recovered_with_valid_tool_call": False,
+                                                          "recovery_call_index": None, **outcome}}
+            return response, outcome, record
         finally:
             with state.lock:
                 try:
@@ -351,23 +412,39 @@ class _Handler(BaseHTTPRequestHandler):
         transformed = self.server.state.protocol.transform_request(
             original,
             self.server.state.model_name,
+            instructions_override=session.instructions_override,
+            enable_thinking=session.enable_thinking,
+            compact_harness_context=session.compact_harness_context,
         )
         transformed.update(session.generation)
+        pending_protocol_errors: list[dict[str, Any]] = []
         while True:
-            response, outcome = self._model_completion(session_id, original, transformed)
+            response, outcome, record = self._model_completion(session_id, original, transformed)
+            if outcome["failure_origin"] is None and pending_protocol_errors:
+                message = response.get("choices", [{}])[0].get("message", {})
+                self.server.state.mark_protocol_recovery(
+                    session_id, pending_protocol_errors, int(record["ordinal"]),
+                    bool(message.get("tool_calls")),
+                )
+                pending_protocol_errors.clear()
             if not outcome["trainable"]:
                 raise ToolProtocolFailure(dict(outcome, model_calls=len(session.completions)))
             if outcome["failure_origin"] != "model":
                 break
+            pending_protocol_errors.append(record)
             if len(session.completions) >= session.max_completions:
                 raise ToolProtocolFailure(dict(outcome, failure_reason="tool_format_budget_exhausted",
                                                model_calls=len(session.completions)))
             transformed = {**transformed, "messages": [*transformed["messages"],
                 {"role": "assistant", "content": response["hyper_tool_protocol"][0]["engine_text"]},
-                {"role": "user", "content": "Tool format error: invalid JSON/schema. Nothing was executed. "
-                 "Generate a new valid tool call or answer."},
+                {"role": "user", "content":
+                 "Tool call rejected: invalid JSON/schema. Nothing was executed. "
+                 "Generate a new valid tool call or answer. Use strict JSON escaping; "
+                 "a backslash before an apostrophe is not a valid JSON escape."},
             ]}
-        result = self.server.state.protocol.transform_response(response, original)
+        result = self.server.state.protocol.transform_response(
+            response, original, exec_command_yield_time_ms=session.exec_command_yield_time_ms,
+        )
         if bool(original.get("stream")):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")

@@ -43,7 +43,7 @@ from rl.roles.rollout.topology import (
     VLLMRolloutTopology,
     resolve_vllm_rollout_topology,
 )
-from rl.roles.weight_sync import (
+from rl.weight_sync import (
     ActorRolloutWeightSync,
     PolicySnapshot,
     VLLMWeightSyncClientMixin,
@@ -52,7 +52,7 @@ from rl.roles.weight_sync import (
     synchronize_error,
     synchronized_call,
 )
-from rl.roles.weight_sync.config import resolve_weight_sync_config
+from rl.weight_sync.config import resolve_weight_sync_config
 
 _DISTRIBUTED_ENVIRONMENT_VARIABLES = (
     "RANK",
